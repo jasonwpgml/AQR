@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -12,7 +12,13 @@ from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentStatus, ErrorType, TaskStatus
 from ai_queue_runner.domain.models import Task, TaskRun
-from ai_queue_runner.infrastructure.adapters.base import AgentAdapter
+from ai_queue_runner.infrastructure.adapters.base import (
+    AgentAdapter,
+    validated_limit_reset,
+)
+from ai_queue_runner.infrastructure.adapters.base import (
+    extract_limit_reset as default_extract_limit_reset,
+)
 from ai_queue_runner.infrastructure.adapters.base import (
     summarize_output as default_summarize_output,
 )
@@ -198,14 +204,28 @@ class ExecutionService:
             classified_error is ErrorType.USAGE_LIMIT
             or matched_unstructured_limit
         ):
+            reset_output = _read_output_tail(
+                stderr_path,
+                stdout_path,
+                max_bytes=_SUMMARY_TAIL_BYTES,
+            )
+            available_at = _extract_limit_reset(adapter, reset_output)
+            if available_at is None:
+                available_at = utcnow() + timedelta(
+                    minutes=settings.default_cooldown_minutes
+                )
+            reset_note = (
+                "usage limit detected; automatically available at "
+                f"{available_at.isoformat(sep=' ', timespec='seconds')} UTC"
+            )
             run.error_type = ErrorType.USAGE_LIMIT
             task_repo.set_status(task, TaskStatus.WAITING)
             task.assigned_agent = None
             task.reserved_at = None
             task.started_at = None
-            task.last_error = output_tail or "usage limit detected"
+            task.last_error = f"{output_tail}\n{reset_note}" if output_tail else reset_note
             agent_state.status = AgentStatus.COOLDOWN
-            agent_state.available_at = None
+            agent_state.available_at = available_at
             agent_state.current_task_id = None
             agent_state.last_error = task.last_error
             return
@@ -299,8 +319,17 @@ class ExecutionService:
         agent_state.current_task_id = None
 
 
-def _read_output_tail(stderr_path: Path, stdout_path: Path) -> str:
-    return "\n".join(part for path in (stderr_path, stdout_path) if (part := _read_tail(path)))
+def _read_output_tail(
+    stderr_path: Path,
+    stdout_path: Path,
+    *,
+    max_bytes: int = _OUTPUT_TAIL_BYTES,
+) -> str:
+    return "\n".join(
+        part
+        for path in (stderr_path, stdout_path)
+        if (part := _read_tail(path, max_bytes))
+    )
 
 
 def _read_tail(path: Path, max_bytes: int = _OUTPUT_TAIL_BYTES) -> str:
@@ -322,6 +351,16 @@ def _populate_result_summary(run: TaskRun, adapter: AgentAdapter, stdout_path: P
         run.result_summary = summarizer(_read_tail(stdout_path, _SUMMARY_TAIL_BYTES))
     except Exception:
         run.result_summary = None
+
+
+def _extract_limit_reset(adapter: AgentAdapter, output: str) -> datetime | None:
+    extractor = getattr(adapter, "extract_limit_reset", default_extract_limit_reset)
+    if not callable(extractor):
+        return None
+    try:
+        return validated_limit_reset(extractor(output))
+    except Exception:
+        return None
 
 
 def _matches_usage_limit(output: str, patterns: list[str]) -> bool:
