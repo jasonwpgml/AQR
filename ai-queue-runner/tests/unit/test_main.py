@@ -270,6 +270,153 @@ def test_cli_cancel_refuses_succeeded_task_with_expected_exit(tmp_path, capsys):
     assert "Traceback" not in error
 
 
+def add_waiting_task(config_path, allowed_root, capsys, title="작업"):
+    project = allowed_root / "project"
+    project.mkdir(exist_ok=True)
+    args = cli_args(
+        config_path,
+        "add-task",
+        "--title",
+        title,
+        "--prompt",
+        "프롬프트",
+        "--project",
+        project,
+        as_json=True,
+    )
+    assert main(args) == 0
+    return json.loads(capsys.readouterr().out)["id"]
+
+
+def force_status(config_path, task_id, *statuses):
+    config = load_config(config_path)
+    engine = create_db_engine(config.app.db_path)
+    with make_session_factory(engine)() as session:
+        repo = TaskRepository(session)
+        task = repo.get(task_id)
+        for status in statuses:
+            repo.set_status(task, status)
+        session.commit()
+    engine.dispose()
+
+
+def test_cli_retry_task_requeues_failed_task(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    task_id = add_waiting_task(config_path, allowed_root, capsys)
+    force_status(
+        config_path,
+        task_id,
+        TaskStatus.RESERVED,
+        TaskStatus.RUNNING,
+        TaskStatus.FAILED,
+    )
+
+    assert main(cli_args(config_path, "retry-task", task_id, "--json")) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "waiting"
+    assert payload["last_error"] is None
+
+
+def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    task_id = add_waiting_task(config_path, allowed_root, capsys, title="원래 제목")
+
+    args = cli_args(
+        config_path,
+        "update-task",
+        task_id,
+        "--approval",
+        "auto",
+        "--priority",
+        90,
+        as_json=True,
+    )
+    assert main(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["approval_mode"] == "auto"
+    assert payload["priority"] == 90
+    assert payload["title"] == "원래 제목"
+    assert payload["agent_policy"] == "any"
+
+    conflict = cli_args(
+        config_path,
+        "update-task",
+        task_id,
+        "--not-before",
+        "2030-01-01 09:00",
+        "--clear-not-before",
+    )
+    assert main(conflict) == 2
+    assert "함께 쓸 수 없습니다" in capsys.readouterr().err
+
+
+def test_cli_move_top_duplicate_archive_and_delete(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    first = add_waiting_task(config_path, allowed_root, capsys, title="첫 작업")
+    second = add_waiting_task(config_path, allowed_root, capsys, title="둘째 작업")
+
+    assert main(cli_args(config_path, "move-top", second, "--json")) == 0
+    assert json.loads(capsys.readouterr().out)["priority"] == 100
+
+    assert main(cli_args(config_path, "duplicate-task", first, "--json")) == 0
+    duplicated = json.loads(capsys.readouterr().out)
+    assert duplicated["id"] not in {first, second}
+    assert duplicated["title"] == "첫 작업"
+    assert duplicated["status"] == "waiting"
+
+    force_status(
+        config_path,
+        first,
+        TaskStatus.RESERVED,
+        TaskStatus.RUNNING,
+        TaskStatus.SUCCEEDED,
+    )
+    assert main(cli_args(config_path, "archive-task", first, "--json")) == 0
+    assert json.loads(capsys.readouterr().out)["archived"] is True
+
+    assert main(cli_args(config_path, "delete-task", duplicated["id"], "--json")) == 0
+    assert json.loads(capsys.readouterr().out) == {"deleted": duplicated["id"]}
+    assert main(cli_args(config_path, "show-task", duplicated["id"])) == 2
+    assert "찾을 수 없습니다" in capsys.readouterr().err
+
+
+def test_cli_set_agent_and_queue_status_report_automation_state(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    task_id = add_waiting_task(config_path, allowed_root, capsys)
+
+    assert main(
+        cli_args(
+            config_path,
+            "set-agent",
+            "claude",
+            "cooldown",
+            "--until",
+            "2030-04-05 09:00",
+            "--json",
+        )
+    ) == 0
+    agent_payload = json.loads(capsys.readouterr().out)
+    assert agent_payload["agent"] == "claude"
+    assert agent_payload["status"] == "cooldown"
+    assert agent_payload["available_at"].endswith("Z")
+
+    assert main(cli_args(config_path, "queue-status", "--json")) == 0
+    status_payload = json.loads(capsys.readouterr().out)
+    assert status_payload["global_auto_run"] is False
+    assert status_payload["task_counts"] == {"waiting": 1}
+    assert status_payload["archived_count"] == 0
+    assert status_payload["pending_confirmations"] == []
+    agents = {record["agent"]: record for record in status_payload["agents"]}
+    assert agents["claude"]["status"] == "cooldown"
+    assert agents["codex"]["status"] == "unknown"
+
+    force_status(config_path, task_id, TaskStatus.RESERVED)
+    assert main(cli_args(config_path, "queue-status")) == 0
+    text = capsys.readouterr().out
+    assert "global_auto_run: false" in text
+    assert "승인 대기(reserved):" in text
+
+
 def test_cli_not_before_converts_local_time_to_naive_utc(tmp_path, capsys):
     config_path, allowed_root = write_cli_config(tmp_path)
     project = allowed_root / "project"

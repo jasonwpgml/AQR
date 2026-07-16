@@ -44,7 +44,7 @@ allowed_project_roots = ["C:/Users/me/projects"]
 1. Claude/Codex 상태 패널에서 사용 가능 여부나 재사용 가능 시각을 설정합니다.
 2. 작업 추가 창에서 절대 프로젝트 경로, 프롬프트, 담당 에이전트, 우선순위, 승인 방식, 재시도와 선행 작업을 입력합니다.
 3. 스케줄러를 시작합니다. 에이전트별로 한 작업만 원자적으로 예약합니다.
-4. 자동 실행이 꺼져 있거나 확인이 필요한 작업은 경로·에이전트·명령·프롬프트를 보고 승인합니다.
+4. 자동 실행이 꺼져 있거나 확인이 필요한 작업은 경로·에이전트·명령·프롬프트를 보고 승인합니다. 거부한 작업은 차단 상태로 남아 다시 묻지 않으며, 재시도 버튼으로 대기열에 되돌릴 수 있습니다. auto 모드 작업을 "즉시 실행"하면 승인 창 없이 바로 실행됩니다.
 5. 작업을 선택해 즉시 실행, 맨 위로 이동, 복제, 취소, 재시도, 완료 보관, 로그/프로젝트 폴더 열기를 사용할 수 있습니다.
 6. 하단 상세/로그에서 실행 결과를 확인합니다. 화면은 최근 2MB를 표시하고 전체 로그는 파일에 보존합니다.
 
@@ -52,7 +52,7 @@ allowed_project_roots = ["C:/Users/me/projects"]
 
 ## AI/CLI 연동
 
-GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 작업을 추가·조회·취소할 수 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
+GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `queue-status`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`), 에이전트 상태(`set-agent`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
 
 ```powershell
 # AI 도우미가 특정 프로젝트의 작업을 등록

@@ -109,6 +109,94 @@ def main(argv: list[str] | None = None) -> int:
     cancel_task = subcommands.add_parser("cancel-task", help="cancel a queued task")
     cancel_task.add_argument("task_id", type=int, metavar="ID")
     _add_subcommand_json_option(cancel_task)
+
+    retry_task = subcommands.add_parser(
+        "retry-task", help="requeue a failed or blocked task"
+    )
+    retry_task.add_argument("task_id", type=int, metavar="ID")
+    _add_subcommand_json_option(retry_task)
+
+    update_task = subcommands.add_parser(
+        "update-task", help="update fields of a waiting task; omitted flags keep current values"
+    )
+    update_task.add_argument("task_id", type=int, metavar="ID")
+    update_task.add_argument("--title", help="new task title")
+    update_task.add_argument("--prompt", help="new prompt")
+    update_task.add_argument("--project", type=Path, help="new absolute project path")
+    update_task.add_argument("--agent", choices=("claude", "codex", "any"))
+    update_task.add_argument("--priority", type=int, metavar="0-100")
+    update_task.add_argument("--approval", choices=("auto", "confirm"))
+    update_task.add_argument(
+        "--not-before",
+        metavar="YYYY-MM-DD HH:MM",
+        help="local time; stored internally as UTC",
+    )
+    update_task.add_argument(
+        "--clear-not-before",
+        action="store_true",
+        help="remove the scheduled start time",
+    )
+    update_task.add_argument("--max-retries", type=int, metavar="N")
+    update_task.add_argument("--retry-delay", type=int, metavar="MINUTES")
+    update_task.add_argument(
+        "--tag",
+        action="extend",
+        nargs="+",
+        default=None,
+        metavar="TAG",
+        help="replace all tags",
+    )
+    update_task.add_argument(
+        "--depends-on",
+        action="extend",
+        nargs="+",
+        type=int,
+        default=None,
+        metavar="ID",
+        help="replace all dependencies",
+    )
+    _add_subcommand_json_option(update_task)
+
+    duplicate_task = subcommands.add_parser(
+        "duplicate-task", help="create a new waiting copy of a task"
+    )
+    duplicate_task.add_argument("task_id", type=int, metavar="ID")
+    _add_subcommand_json_option(duplicate_task)
+
+    move_top = subcommands.add_parser(
+        "move-top", help="move a waiting task to the top of the queue"
+    )
+    move_top.add_argument("task_id", type=int, metavar="ID")
+    _add_subcommand_json_option(move_top)
+
+    archive_task = subcommands.add_parser(
+        "archive-task", help="archive a succeeded task"
+    )
+    archive_task.add_argument("task_id", type=int, metavar="ID")
+    _add_subcommand_json_option(archive_task)
+
+    delete_task = subcommands.add_parser(
+        "delete-task", help="delete a task and its run history"
+    )
+    delete_task.add_argument("task_id", type=int, metavar="ID")
+    _add_subcommand_json_option(delete_task)
+
+    set_agent = subcommands.add_parser(
+        "set-agent", help="set manual agent availability"
+    )
+    set_agent.add_argument("agent", choices=("claude", "codex"))
+    set_agent.add_argument("state", choices=("available", "cooldown", "disabled"))
+    set_agent.add_argument(
+        "--until",
+        metavar="YYYY-MM-DD HH:MM",
+        help="local time when a cooldown agent becomes available again",
+    )
+    _add_subcommand_json_option(set_agent)
+
+    queue_status = subcommands.add_parser(
+        "queue-status", help="summarize tasks, agents, and automation settings"
+    )
+    _add_subcommand_json_option(queue_status)
     args = parser.parse_args(argv)
 
     if args.version:

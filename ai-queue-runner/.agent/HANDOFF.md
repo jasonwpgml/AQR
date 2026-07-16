@@ -1,49 +1,30 @@
-FROM: codex
-TO: claude
-TASK: T023 + T024
-STATUS: completed
+FROM: claude
+TO: (review)
+TASK: T025 + T026
+STATUS: done
 
-CHANGED (T023):
-- src/ai_queue_runner/ui/calendar_view.py
-- src/ai_queue_runner/ui/main_window.py
-- src/ai_queue_runner/ui/task_dialog.py
-- src/ai_queue_runner/application/task_service.py
-- tests/unit/test_ui.py
-- tests/integration/test_application_services.py
-- .agent/STATE.md
-- .agent/TASKS.md
-- .agent/HANDOFF.md
-
-CHANGED (T024):
-- src/ai_queue_runner/main.py
-- src/ai_queue_runner/application/cli_service.py
-- tests/unit/test_main.py
-- README.md
-- .agent/STATE.md
-- .agent/TASKS.md
-- .agent/HANDOFF.md
+CHANGED:
+- src/ai_queue_runner/ui/main_window.py — approval dedup (request_approval registers
+  reservation id; nested-event-loop guard `_approval_dialog_open`), run-now auto tasks
+  execute without dialog, reserved-task cancel now rejects then cancels.
+- src/ai_queue_runner/application/runtime.py — reject(block=True) parks task in BLOCKED
+  with last_error so the scheduler cannot immediately re-reserve/re-prompt.
+- src/ai_queue_runner/main.py, application/cli_service.py — new subcommands:
+  retry-task, update-task (partial overlay), duplicate-task, move-top, archive-task,
+  delete-task, set-agent, queue-status. All support --json.
+- docs/AI_GUIDE.md (new), README.md — AI-facing CLI contract and automation setup.
+- tests: unit/test_ui.py (4 new), integration/test_runtime.py (1 new), unit/test_main.py (4 new).
 
 VERIFIED:
-- T023: `..\.venv\Scripts\python -m pytest -q` -> 239 passed in 11.97s
-- T023: `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
-- T024/final: `..\.venv\Scripts\python -m pytest -q` -> 245 passed in 12.58s
-- T024/final: `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
+- `..\.venv\Scripts\python -m pytest -q` -> 254 passed in 10.95s
+- `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
 
 NOTES:
-- T023 adds a local-time calendar tab backed only by TaskService activity queries. It
-  marks created/finished/scheduled dates, groups the selected day's tasks, focuses the
-  main queue table on double-click, and presets new tasks to 09:00 local time while
-  persisting the existing not_before field as naive UTC.
-- T024 adds Qt-free add-task/list-tasks/show-task/cancel-task argparse subcommands using
-  the existing config selection and TaskService validation. Text and stable JSON output
-  are supported; JSON enum values are strings and datetimes are UTC ISO-8601 values.
-- CLI validation/policy errors exit 2 with a one-line Korean message; unexpected errors
-  exit 3 without a traceback. A fresh-process test confirms PySide6 is not imported.
-- README includes copy-pasteable AI/CLI examples and documents local --not-before input.
+- Rejecting an approval now leaves the task BLOCKED (was: WAITING → immediate
+  re-reserve → re-prompt loop). retry-task / GUI 재시도 returns it to the queue.
+- CLI approval default remains `confirm`; autonomous flows must pass --approval auto
+  (documented in AI_GUIDE).
+- queue-status cannot tell whether a GUI scheduler is actually running (cross-process).
 
 RISKS:
-- The first full-suite run reached the pre-existing startup-registration test before it
-  was isolated and re-exported the effective config to
-  `%LOCALAPPDATA%\AIQueueRunner\config.toml` at 16:09:33. The test now redirects that
-  export to tmp_path; the final full-suite rerun left the real file timestamp unchanged.
-  Both repository and LOCALAPPDATA queue.db timestamps remained earlier and unchanged.
+- dist exe still predates T017+; needs scripts/build_windows.ps1 rebuild.
