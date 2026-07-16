@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-queue-runner"
+version = "0.1.0"
+description = "Local task queue scheduler that dispatches work to Claude and Codex CLIs"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "sqlalchemy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+ai-queue-runner = "ai_queue_runner.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_queue_runner"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

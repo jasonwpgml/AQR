@@ -1,0 +1,49 @@
+# AI Queue Runner configuration example.
+# Copy to config.toml next to this file and adjust. Relative paths resolve
+# against the directory containing config.toml.
+
+[app]
+# Global safety switch: when false, no task runs without user approval.
+global_auto_run = false
+
+# Tasks whose project_path is outside these roots are never executed.
+allowed_project_roots = [
+    # "C:/projects",
+    # "D:/workspace",
+]
+
+db_path = "data/queue.db"
+logs_dir = "logs"
+log_level = "INFO"   # DEBUG | INFO | WARNING | ERROR
+
+[scheduler]
+poll_interval_seconds = 30
+
+# Scoring (plan §5.2)
+dedicated_agent_bonus = 20
+waiting_time_bonus_per_hour = 1.0
+waiting_time_bonus_max_hours = 24
+retry_penalty_per_attempt = 5
+dependency_bonus_per_dependent = 2
+dependency_bonus_max = 10
+
+# Dedicated-task protection (plan §5.5)
+dedicated_wait_hours_threshold = 12
+dedicated_wait_extra_bonus = 10
+dedicated_priority_preempt = 90
+
+# A reservation older than this is released back to waiting.
+reserved_timeout_minutes = 10
+
+# Only "exclusive" is supported in v1 (plan §5.6).
+project_lock_mode = "exclusive"
+
+# Per-agent settings. limit_patterns are substrings searched in CLI output to
+# classify usage-limit errors; adjust them to match your installed CLI versions.
+[agents.claude]
+enabled = true
+limit_patterns = ["usage limit", "rate limit"]
+
+[agents.codex]
+enabled = true
+limit_patterns = ["usage limit", "rate limit"]
