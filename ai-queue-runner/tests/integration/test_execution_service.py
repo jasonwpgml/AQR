@@ -32,6 +32,7 @@ from ai_queue_runner.infrastructure.repositories import (
 def config(tmp_path: Path) -> AppConfig:
     config = AppConfig()
     config.app.logs_dir = tmp_path / "logs"
+    config.app.allowed_project_roots = [tmp_path]
     return config
 
 
@@ -112,6 +113,26 @@ async def test_success_persists_run_logs_and_releases_agent(
     assert state.current_task_id is None
 
 
+async def test_success_clears_previous_task_and_agent_errors(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("print('recovered')")
+    task = reserve_task(session, config, project_path, adapter, retry_count=1)
+    task.last_error = "previous failure"
+    state = AgentStateRepository(session).get(adapter.name)
+    state.last_error = "previous agent failure"
+    session.commit()
+
+    await ExecutionService(config, ProcessRunner()).execute(session, task, adapter)
+
+    assert task.status is TaskStatus.SUCCEEDED
+    assert task.last_error is None
+    assert state.status is AgentStatus.AVAILABLE
+    assert state.last_error is None
+
+
 async def test_failure_with_retries_remaining_enters_retry_wait(
     session,
     config: AppConfig,
@@ -160,6 +181,31 @@ async def test_failure_without_retries_enters_failed(
     assert run.error_type is ErrorType.UNKNOWN
 
 
+async def test_structured_error_marker_overrides_zero_exit(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("print('authentication failed')")
+
+    task, run = await execute_reserved(
+        session,
+        config,
+        project_path,
+        adapter,
+        max_retries=0,
+    )
+
+    assert task.status is TaskStatus.BLOCKED
+    assert task.retry_count == 0
+    assert run.exit_code == 0
+    assert run.error_type is ErrorType.AUTH
+    agent_state = AgentStateRepository(session).get(AgentName.CLAUDE)
+    assert agent_state is not None
+    assert agent_state.status is AgentStatus.ERROR
+    assert "authentication failed" in agent_state.last_error
+
+
 async def test_usage_limit_returns_task_to_queue_and_cools_down_agent(
     session,
     config: AppConfig,
@@ -181,6 +227,19 @@ async def test_usage_limit_returns_task_to_queue_and_cools_down_agent(
     assert state.status is AgentStatus.COOLDOWN
     assert state.available_at is None
     assert state.current_task_id is None
+
+
+async def test_success_output_discussing_rate_limits_remains_successful(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("print('write documentation about rate limit handling')")
+
+    task, run = await execute_reserved(session, config, project_path, adapter)
+
+    assert run.exit_code == 0
+    assert task.status is TaskStatus.SUCCEEDED
 
 
 async def test_timeout_uses_retry_path(
@@ -243,9 +302,11 @@ async def test_cancellation_is_persisted_then_propagated(
     stdout_path = config.app.logs_dir / "tasks" / str(task.id) / "attempt_1.stdout.log"
     await wait_until(
         lambda: stdout_path.exists()
-        and "started" in stdout_path.read_text(encoding="utf-8")
+        and "started" in stdout_path.read_text(encoding="utf-8"),
     )
 
+    active_run = TaskRunRepository(session).list_for_task(task.id)[0]
+    assert active_run.pid is not None
     execution.cancel()
     with pytest.raises(asyncio.CancelledError):
         await execution
@@ -355,6 +416,24 @@ async def test_execute_rejects_waiting_task(
             task,
             python_adapter("print('must not run')"),
         )
+
+
+async def test_invalid_project_path_is_blocked_before_spawn(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("raise SystemExit('must not spawn')")
+    task = reserve_task(session, config, project_path, adapter)
+    config.app.allowed_project_roots = []
+
+    with pytest.raises(ValueError, match="allowed project root"):
+        await ExecutionService(config, ProcessRunner()).execute(session, task, adapter)
+
+    assert task.status is TaskStatus.BLOCKED
+    assert task.assigned_agent is None
+    assert "allowed project root" in task.last_error
+    assert TaskRunRepository(session).list_for_task(task.id) == []
 
 
 async def wait_until(predicate, timeout_seconds: float = 5) -> None:

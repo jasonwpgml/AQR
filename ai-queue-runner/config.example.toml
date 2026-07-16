@@ -42,10 +42,12 @@ project_lock_mode = "exclusive"
 # classify usage-limit errors; adjust them to match your installed CLI versions.
 [agents.claude]
 enabled = true
+executable = "claude"
 run_timeout_minutes = 120
-limit_patterns = ["usage limit", "rate limit"]
+limit_patterns = ["usage limit", "rate limit", "rate_limit", "session limit"]
 
 [agents.codex]
 enabled = true
+executable = "codex"
 run_timeout_minutes = 120
-limit_patterns = ["usage limit", "rate limit"]
+limit_patterns = ["usage limit", "rate limit", "rate_limit", "session limit"]

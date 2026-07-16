@@ -1,0 +1,627 @@
+"""Primary queue-management window."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from datetime import datetime
+from typing import Any
+
+from PySide6.QtCore import QItemSelection, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ai_queue_runner.domain.enums import AgentName, AgentStatus, TaskStatus
+from ai_queue_runner.ui.agent_status_widget import AgentStatusWidget
+from ai_queue_runner.ui.approval_dialog import ApprovalDialog
+from ai_queue_runner.ui.log_viewer import LogViewer
+from ai_queue_runner.ui.task_dialog import TaskDialog
+from ai_queue_runner.ui.task_table import TaskColumn, TaskTableModel, enum_value
+from ai_queue_runner.ui.tray import QueueSystemTray
+
+
+class MainWindow(QMainWindow):
+    """Coordinate UI actions through application services only."""
+
+    def __init__(
+        self,
+        task_service: object,
+        agent_service: object,
+        runtime: object,
+        adapters: Mapping[object, object],
+        parent: QWidget | None = None,
+        *,
+        create_tray: bool = True,
+    ) -> None:
+        super().__init__(parent)
+        self.task_service = task_service
+        self.agent_service = agent_service
+        self.runtime = runtime
+        self.adapters = adapters
+        self._selected_task: object | None = None
+        self._prompted_reservations: set[int] = set()
+
+        self.setWindowTitle("AI Queue Runner")
+        self.resize(1100, 760)
+        self.setMinimumSize(960, 640)
+
+        self.agent_widgets = {
+            agent: AgentStatusWidget(agent) for agent in (AgentName.CLAUDE, AgentName.CODEX)
+        }
+        for widget in self.agent_widgets.values():
+            widget.availability_changed.connect(self._set_agent_availability)
+
+        self.start_button = QPushButton("스케줄러 시작")
+        self.pause_button = QPushButton("일시정지")
+        self.add_button = QPushButton("작업 추가")
+        self.edit_button = QPushButton("수정")
+        self.duplicate_button = QPushButton("복제")
+        self.run_now_button = QPushButton("즉시 실행")
+        self.move_top_button = QPushButton("맨 위로")
+        self.retry_button = QPushButton("재시도")
+        self.archive_button = QPushButton("완료 보관")
+        self.cancel_button = QPushButton("취소")
+        self.stop_button = QPushButton("실행 중단")
+        self.open_log_button = QPushButton("로그 열기")
+        self.open_folder_button = QPushButton("프로젝트 폴더")
+        self.refresh_button = QPushButton("새로고침")
+
+        self.start_button.clicked.connect(self.start_scheduler)
+        self.pause_button.clicked.connect(self.pause_scheduler)
+        self.add_button.clicked.connect(self.add_task)
+        self.edit_button.clicked.connect(self.edit_task)
+        self.duplicate_button.clicked.connect(self.duplicate_task)
+        self.run_now_button.clicked.connect(self.run_now_task)
+        self.move_top_button.clicked.connect(self.move_task_to_top)
+        self.retry_button.clicked.connect(self.retry_task)
+        self.archive_button.clicked.connect(self.archive_task)
+        self.cancel_button.clicked.connect(self.cancel_task)
+        self.stop_button.clicked.connect(self.cancel_running_task)
+        self.open_log_button.clicked.connect(self.open_log)
+        self.open_folder_button.clicked.connect(self.open_project_folder)
+        self.refresh_button.clicked.connect(self.refresh)
+
+        self.status_filter = QComboBox()
+        self.status_filter.setAccessibleName("작업 상태 필터")
+        for label, status in (
+            ("전체", None),
+            ("대기", TaskStatus.WAITING),
+            ("예약", TaskStatus.RESERVED),
+            ("실행", TaskStatus.RUNNING),
+            ("재시도 대기", TaskStatus.RETRY_WAIT),
+            ("차단", TaskStatus.BLOCKED),
+            ("실패", TaskStatus.FAILED),
+            ("완료", TaskStatus.SUCCEEDED),
+            ("취소", TaskStatus.CANCELLED),
+            ("보관됨", "archived"),
+        ):
+            self.status_filter.addItem(label, status)
+        self.status_filter.currentIndexChanged.connect(self.refresh)
+
+        self.task_model = TaskTableModel()
+        self.task_table = QTableView()
+        self.task_table.setModel(self.task_model)
+        self.task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.task_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.task_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.task_table.setAlternatingRowColors(True)
+        self.task_table.verticalHeader().setVisible(False)
+        self.task_table.verticalHeader().setDefaultSectionSize(28)
+        header = self.task_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.resizeSection(TaskColumn.PRIORITY, 72)
+        header.resizeSection(TaskColumn.AGENT, 76)
+        header.resizeSection(TaskColumn.STATUS, 100)
+        header.resizeSection(TaskColumn.TITLE, 330)
+        self.task_table.selectionModel().selectionChanged.connect(self._selection_changed)
+        self.task_table.doubleClicked.connect(lambda _index: self.edit_task())
+
+        self.details_view = QPlainTextEdit()
+        self.details_view.setReadOnly(True)
+        self.details_view.setPlaceholderText("작업을 선택하면 상세 정보가 표시됩니다.")
+        self.log_viewer = LogViewer()
+        detail_splitter = QSplitter(Qt.Orientation.Horizontal)
+        detail_splitter.addWidget(self.details_view)
+        detail_splitter.addWidget(self.log_viewer)
+        detail_splitter.setSizes([430, 650])
+
+        content_splitter = QSplitter(Qt.Orientation.Vertical)
+        content_splitter.addWidget(self.task_table)
+        content_splitter.addWidget(detail_splitter)
+        content_splitter.setSizes([390, 290])
+
+        agent_row = QHBoxLayout()
+        for widget in self.agent_widgets.values():
+            agent_row.addWidget(widget)
+        task_controls = QHBoxLayout()
+        for widget in (
+            self.add_button,
+            self.edit_button,
+            self.duplicate_button,
+            self.run_now_button,
+            self.move_top_button,
+            self.retry_button,
+            self.archive_button,
+            self.cancel_button,
+            self.stop_button,
+            self.open_log_button,
+            self.open_folder_button,
+        ):
+            task_controls.addWidget(widget)
+        task_controls.addStretch(1)
+        scheduler_controls = QHBoxLayout()
+        for widget in (
+            self.start_button,
+            self.pause_button,
+        ):
+            scheduler_controls.addWidget(widget)
+        scheduler_controls.addStretch(1)
+        scheduler_controls.addWidget(QLabel("필터"))
+        scheduler_controls.addWidget(self.status_filter)
+        scheduler_controls.addWidget(self.refresh_button)
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        layout.addLayout(agent_row)
+        layout.addLayout(task_controls)
+        layout.addLayout(scheduler_controls)
+        layout.addWidget(content_splitter, 1)
+        self.setCentralWidget(central)
+        self.statusBar().showMessage("준비")
+
+        self.tray: QueueSystemTray | None = None
+        if create_tray:
+            self.tray = QueueSystemTray(self, fallback=self.statusBar().showMessage)
+            self.tray.show_requested.connect(self.show_from_tray)
+            self.tray.start_requested.connect(self.start_scheduler)
+            self.tray.pause_requested.connect(self.pause_scheduler)
+            self.tray.availability_requested.connect(self._set_tray_availability)
+            self.tray.quit_requested.connect(self._quit_application)
+            self.tray.show()
+
+        self.refresh()
+        self._last_task_statuses = {
+            int(task.id): enum_value(getattr(task, "status", ""))
+            for task in self._list_tasks()
+        }
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(1000)
+        self.refresh_timer.timeout.connect(self._poll_runtime)
+        self.refresh_timer.start()
+
+    def _list_tasks(self, status: TaskStatus | str | None = None) -> list[object]:
+        return list(self.task_service.list(status=status))
+
+    def _get_task(self, task_id: int) -> object | None:
+        return self.task_service.get(task_id)
+
+    def _list_agent_states(self) -> list[object]:
+        return list(self.agent_service.list())
+
+    def refresh(self, *_args: object) -> None:
+        selected_id = getattr(self._selected_task, "id", None)
+        try:
+            tasks = self._list_tasks(self.status_filter.currentData())
+            states = self._list_agent_states()
+        except Exception as exc:  # UI boundary: service failures remain visible.
+            self.statusBar().showMessage(f"새로고침 실패: {exc}")
+            return
+        self.task_model.set_tasks(tasks)
+        by_agent = {enum_value(getattr(state, "agent", "")): state for state in states}
+        for agent, widget in self.agent_widgets.items():
+            widget.set_state(by_agent.get(agent.value))
+        self._restore_selection(selected_id)
+        running = bool(getattr(self.runtime, "running", False))
+        paused = bool(getattr(self.runtime, "paused", not running))
+        self.start_button.setEnabled(not running or paused)
+        self.pause_button.setEnabled(running and not paused)
+        if self.tray is not None:
+            self.tray.set_running(running and not paused)
+            waiting = next(
+                (
+                    task
+                    for task in self.task_model.tasks
+                    if enum_value(getattr(task, "status", "")) == TaskStatus.WAITING.value
+                ),
+                None,
+            )
+            self.tray.set_next_task(waiting)
+        self._update_action_state()
+        self.statusBar().showMessage(f"작업 {len(tasks)}개", 3000)
+
+    def _restore_selection(self, task_id: object) -> None:
+        if task_id is None:
+            self._clear_selection_details()
+            return
+        for row, task in enumerate(self.task_model.tasks):
+            if getattr(task, "id", None) == task_id:
+                self.task_table.selectRow(row)
+                return
+        self._clear_selection_details()
+
+    def _selection_changed(
+        self,
+        selected: QItemSelection,
+        _deselected: QItemSelection,
+    ) -> None:
+        indexes = selected.indexes() or self.task_table.selectionModel().selectedRows()
+        if not indexes:
+            self._clear_selection_details()
+            return
+        task = self.task_model.task_at(indexes[0].row())
+        task_id = getattr(task, "id", None)
+        try:
+            self._selected_task = self._get_task(task_id) if task_id is not None else task
+        except Exception as exc:
+            self.statusBar().showMessage(f"작업 상세 조회 실패: {exc}")
+            self._selected_task = task
+        self._show_selected_details()
+
+    def _clear_selection_details(self) -> None:
+        self._selected_task = None
+        self.details_view.clear()
+        self.log_viewer.clear()
+        self._update_action_state()
+
+    def _show_selected_details(self) -> None:
+        task = self._selected_task
+        if task is None:
+            self._clear_selection_details()
+            return
+        assigned = getattr(task, "assigned_agent", None) or getattr(task, "agent_policy", "")
+        details = [
+            f"#{getattr(task, 'id', '')}  {getattr(task, 'title', '')}",
+            f"상태: {enum_value(getattr(task, 'status', ''))}",
+            f"담당 AI: {enum_value(assigned)}",
+            f"우선순위: {getattr(task, 'priority', '')}",
+            f"프로젝트: {getattr(task, 'project_path', '')}",
+            f"재시도: {getattr(task, 'retry_count', 0)} / {getattr(task, 'max_retries', 0)}",
+        ]
+        last_error = getattr(task, "last_error", None)
+        if last_error:
+            details.extend(("", "마지막 오류:", str(last_error)))
+        details.extend(("", "프롬프트:", str(getattr(task, "prompt", ""))))
+        self.details_view.setPlainText("\n".join(details))
+        try:
+            runs = list(self.task_service.list_runs(task.id))
+        except Exception as exc:
+            self.statusBar().showMessage(f"실행 기록 조회 실패: {exc}")
+            runs = []
+        self.log_viewer.set_run(runs[-1] if runs else None)
+        self._update_action_state()
+
+    def _update_action_state(self) -> None:
+        has_task = self._selected_task is not None
+        status = enum_value(getattr(self._selected_task, "status", ""))
+        self.edit_button.setEnabled(has_task and status == TaskStatus.WAITING.value)
+        self.duplicate_button.setEnabled(has_task)
+        self.retry_button.setEnabled(
+            has_task and status in {TaskStatus.FAILED.value, TaskStatus.BLOCKED.value}
+        )
+        self.run_now_button.setEnabled(has_task and status == TaskStatus.WAITING.value)
+        self.move_top_button.setEnabled(has_task and status == TaskStatus.WAITING.value)
+        self.archive_button.setEnabled(
+            has_task
+            and status == TaskStatus.SUCCEEDED.value
+            and not bool(getattr(self._selected_task, "archived", False))
+        )
+        self.open_log_button.setEnabled(has_task)
+        self.open_folder_button.setEnabled(has_task)
+        self.cancel_button.setEnabled(
+            has_task
+            and status
+            in {
+                TaskStatus.WAITING.value,
+                TaskStatus.RESERVED.value,
+                TaskStatus.RETRY_WAIT.value,
+                TaskStatus.BLOCKED.value,
+            }
+        )
+        running = has_task and status == TaskStatus.RUNNING.value
+        if running and hasattr(self.runtime, "is_active"):
+            try:
+                running = bool(self.runtime.is_active(getattr(self._selected_task, "id", None)))
+            except TypeError:
+                running = bool(self.runtime.is_active())
+        self.stop_button.setEnabled(running)
+
+    def _poll_runtime(self) -> None:
+        """Refresh visible state and surface each confirmation reservation once."""
+        self.refresh()
+        try:
+            tasks = self._list_tasks()
+        except Exception:
+            return
+        self._notify_task_transitions(tasks)
+        reserved = {
+            int(task.id): task
+            for task in tasks
+            if enum_value(getattr(task, "status", "")) == TaskStatus.RESERVED.value
+        }
+        self._prompted_reservations.intersection_update(reserved)
+        for task_id in reserved:
+            if task_id in self._prompted_reservations:
+                continue
+            try:
+                active = bool(self.runtime.is_active(task_id))
+            except (AttributeError, TypeError):
+                active = False
+            if active:
+                continue
+            self._prompted_reservations.add(task_id)
+            self.request_approval(task_id)
+            break
+
+    def _notify(self, message: str) -> None:
+        self.statusBar().showMessage(message, 5000)
+        if self.tray is not None:
+            self.tray.notify("AI Queue Runner", message)
+
+    def _notify_task_transitions(self, tasks: list[object]) -> None:
+        current = {
+            int(task.id): enum_value(getattr(task, "status", ""))
+            for task in tasks
+        }
+        messages = {
+            TaskStatus.RUNNING.value: "실행을 시작했습니다.",
+            TaskStatus.SUCCEEDED.value: "실행을 완료했습니다.",
+            TaskStatus.FAILED.value: "실행에 실패했습니다.",
+            TaskStatus.BLOCKED.value: "사용자 확인이 필요합니다.",
+        }
+        for task in tasks:
+            task_id = int(task.id)
+            status = current[task_id]
+            if self._last_task_statuses.get(task_id) == status or status not in messages:
+                continue
+            message = f"#{task_id} {getattr(task, 'title', '')}: {messages[status]}"
+            if self.tray is not None:
+                self.tray.notify("AI Queue Runner", message)
+            self.statusBar().showMessage(message, 5000)
+        self._last_task_statuses = current
+
+    def _show_error(self, action: str, exc: Exception) -> None:
+        self.statusBar().showMessage(f"{action} 실패: {exc}")
+        QMessageBox.critical(self, f"{action} 실패", str(exc))
+
+    def start_scheduler(self) -> None:
+        try:
+            self.runtime.start()
+        except Exception as exc:
+            self._show_error("스케줄러 시작", exc)
+            return
+        self._notify("스케줄러를 시작했습니다.")
+        self.refresh()
+
+    def pause_scheduler(self) -> None:
+        try:
+            self.runtime.pause()
+        except Exception as exc:
+            self._show_error("일시정지", exc)
+            return
+        self._notify("스케줄러를 일시정지했습니다.")
+        self.refresh()
+
+    def add_task(self) -> None:
+        dialog = TaskDialog(available_tasks=self._list_tasks(), parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.task_service.create(dialog.build_draft())
+        except Exception as exc:
+            self._show_error("작업 추가", exc)
+            return
+        self._notify("작업을 추가했습니다.")
+        self.refresh()
+
+    def edit_task(self) -> None:
+        if self._selected_task is None:
+            return
+        dialog = TaskDialog(
+            self._selected_task,
+            available_tasks=self._list_tasks(),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.task_service.update(
+                self._selected_task.id,
+                dialog.build_draft(),
+            )
+        except Exception as exc:
+            self._show_error("작업 수정", exc)
+            return
+        self._notify("작업을 수정했습니다.")
+        self.refresh()
+
+    def duplicate_task(self) -> None:
+        self._run_selected_action("작업 복제", "duplicate", "작업을 복제했습니다.")
+
+    def run_now_task(self) -> None:
+        if self._selected_task is None:
+            return
+        task_id = self._selected_task.id
+        try:
+            self.runtime.reserve_now(task_id)
+        except Exception as exc:
+            self._show_error("즉시 실행", exc)
+            return
+        self.request_approval(task_id)
+
+    def move_task_to_top(self) -> None:
+        self._run_selected_action(
+            "맨 위로 이동",
+            "move_to_top",
+            "작업을 대기열 맨 위로 이동했습니다.",
+        )
+
+    def retry_task(self) -> None:
+        self._run_selected_action("재시도", "retry", "작업을 대기열에 다시 넣었습니다.")
+
+    def archive_task(self) -> None:
+        self._run_selected_action("완료 보관", "archive", "완료 작업을 보관했습니다.")
+
+    def open_log(self) -> None:
+        if self._selected_task is None:
+            return
+        self.log_viewer.tabs.setCurrentWidget(self.log_viewer.stdout_view)
+        self.log_viewer.stdout_view.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.statusBar().showMessage("선택 작업의 최신 실행 로그를 열었습니다.", 3000)
+
+    def open_project_folder(self) -> None:
+        if self._selected_task is None:
+            return
+        project_path = str(getattr(self._selected_task, "project_path", ""))
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(project_path)):
+            self._show_error(
+                "프로젝트 폴더 열기",
+                OSError(f"폴더를 열 수 없습니다: {project_path}"),
+            )
+
+    def cancel_task(self) -> None:
+        task = self._selected_task
+        if task is None:
+            return
+        title = getattr(task, "title", "")
+        if (
+            QMessageBox.question(
+                self,
+                "작업 취소",
+                f"'{title}' 작업을 취소하시겠습니까?",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            if enum_value(getattr(task, "status", "")) == TaskStatus.RESERVED.value:
+                self.runtime.reject(task.id)
+            else:
+                self.task_service.cancel(task.id)
+        except Exception as exc:
+            self._show_error("작업 취소", exc)
+            return
+        self._notify("작업을 취소했습니다.")
+        self.refresh()
+
+    def cancel_running_task(self) -> None:
+        task = self._selected_task
+        if task is None:
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "실행 중단",
+                f"'{getattr(task, 'title', '')}' 프로세스를 중단하시겠습니까?",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            self.runtime.cancel_running(task.id)
+        except Exception as exc:
+            self._show_error("실행 중단", exc)
+            return
+        self._notify("실행 중단을 요청했습니다.")
+        self.refresh()
+
+    def _run_selected_action(self, title: str, method_name: str, success: str) -> None:
+        if self._selected_task is None:
+            return
+        try:
+            getattr(self.task_service, method_name)(self._selected_task.id)
+        except Exception as exc:
+            self._show_error(title, exc)
+            return
+        self._notify(success)
+        self.refresh()
+
+    def request_approval(self, task_id: int) -> bool:
+        """Display a pending confirmation; callable by a runtime/UI polling bridge."""
+        task = self._get_task(task_id)
+        if task is None:
+            self.statusBar().showMessage(f"승인할 작업 #{task_id}을 찾을 수 없습니다.")
+            return False
+        adapter = self._adapter_for_task(task)
+        if adapter is None:
+            self.statusBar().showMessage("담당 AI 어댑터를 찾을 수 없습니다.")
+            return False
+        dialog = ApprovalDialog(task, adapter, parent=self)
+        approved = dialog.exec() == QDialog.DialogCode.Accepted
+        try:
+            if approved:
+                self.runtime.approve(task_id)
+            else:
+                self.runtime.reject(task_id)
+        except Exception as exc:
+            self._show_error("실행 승인" if approved else "실행 거부", exc)
+            return False
+        self._notify("실행을 승인했습니다." if approved else "실행을 거부했습니다.")
+        self.refresh()
+        return approved
+
+    def _adapter_for_task(self, task: object) -> object | None:
+        raw_agent = getattr(task, "assigned_agent", None) or getattr(task, "agent_policy", None)
+        value = enum_value(raw_agent)
+        for key in (raw_agent, value):
+            if key in self.adapters:
+                return self.adapters[key]
+        return next(
+            (
+                adapter
+                for adapter in self.adapters.values()
+                if enum_value(getattr(adapter, "name", "")) == value
+            ),
+            None,
+        )
+
+    def _set_agent_availability(
+        self,
+        agent: AgentName,
+        status: AgentStatus,
+        available_at: datetime | None,
+    ) -> None:
+        try:
+            self.agent_service.set_availability(agent, status, available_at)
+        except Exception as exc:
+            self._show_error("AI 상태 변경", exc)
+            return
+        self._notify(f"{agent.value.title()} 상태를 변경했습니다.")
+        self.refresh()
+
+    def _set_tray_availability(self, agent: AgentName, status: AgentStatus) -> None:
+        self._set_agent_availability(agent, status, None)
+
+    def show_from_tray(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_application(self) -> None:
+        shutdown = getattr(self.runtime, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        QApplication.instance().quit()
+
+    def closeEvent(self, event: Any) -> None:  # noqa: N802
+        if self.tray is not None and self.tray.isVisible():
+            self.hide()
+            self.tray.notify("AI Queue Runner", "백그라운드에서 계속 실행 중입니다.")
+            event.ignore()
+            return
+        super().closeEvent(event)

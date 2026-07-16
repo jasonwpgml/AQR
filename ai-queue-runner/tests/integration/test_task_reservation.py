@@ -2,7 +2,10 @@ import threading
 
 import pytest
 
-from ai_queue_runner.application.scheduler_service import reserve_next_task
+from ai_queue_runner.application.scheduler_service import (
+    SchedulerService,
+    reserve_next_task,
+)
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.enums import AgentName, AgentStatus, TaskStatus
 from ai_queue_runner.domain.models import Task
@@ -110,6 +113,54 @@ def test_project_lock_blocks_second_agent(factory, config):
         assert reserve_next_task(session, config, AgentName.CLAUDE) is not None
         # same project is now locked by the reserved task
         assert reserve_next_task(session, config, AgentName.CODEX) is None
+
+
+def test_same_project_lock_is_atomic_across_agents(factory, config, monkeypatch):
+    with factory() as session:
+        set_available(session, AgentName.CLAUDE, AgentName.CODEX)
+        repo = TaskRepository(session)
+        repo.add(make_task(title="a", agent_policy="claude", project_path="C:/same"))
+        repo.add(make_task(title="b", agent_policy="codex", project_path="C:/same"))
+        session.commit()
+
+    selection_barrier = threading.Barrier(2)
+    selection_count = 0
+    count_lock = threading.Lock()
+    original_select = SchedulerService.select_task
+
+    def synchronized_select(self, *args, **kwargs):
+        nonlocal selection_count
+        selected = original_select(self, *args, **kwargs)
+        with count_lock:
+            selection_count += 1
+            should_wait = selection_count <= 2
+        if selected is not None and should_wait:
+            selection_barrier.wait(timeout=5)
+        return selected
+
+    monkeypatch.setattr(SchedulerService, "select_task", synchronized_select)
+    results: dict[AgentName, int | None] = {}
+
+    def attempt(agent: AgentName) -> None:
+        with factory() as session:
+            reserved = reserve_next_task(session, config, agent)
+            results[agent] = None if reserved is None else reserved.id
+
+    threads = [
+        threading.Thread(target=attempt, args=(agent,))
+        for agent in (AgentName.CLAUDE, AgentName.CODEX)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sum(task_id is not None for task_id in results.values()) == 1
+    with factory() as session:
+        reserved = TaskRepository(session).list(status=TaskStatus.RESERVED)
+        assert len(reserved) == 1
+        assert reserved[0].project_path == "C:/same"
 
 
 @pytest.mark.parametrize("round_", range(10))
