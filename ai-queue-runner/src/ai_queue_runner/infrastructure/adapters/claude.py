@@ -56,6 +56,22 @@ class ClaudeAdapter:
     def build_stdin(self, task: Task) -> str:
         return render_prompt(task, "claude_wrapper.txt")
 
+    def summarize_output(self, output: str) -> str | None:
+        summary = None
+        for line in output.splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if (
+                isinstance(event, dict)
+                and event.get("type") == "result"
+                and isinstance(event.get("result"), str)
+                and event["result"].strip()
+            ):
+                summary = event["result"].strip()
+        return summary[:500] if summary else None
+
     def classify_error(self, output: str, exit_code: int | None) -> ErrorType:
         if _contains_rate_limit_event(output):
             return ErrorType.USAGE_LIMIT

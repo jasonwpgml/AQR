@@ -13,6 +13,9 @@ from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentStatus, ErrorType, TaskStatus
 from ai_queue_runner.domain.models import Task, TaskRun
 from ai_queue_runner.infrastructure.adapters.base import AgentAdapter
+from ai_queue_runner.infrastructure.adapters.base import (
+    summarize_output as default_summarize_output,
+)
 from ai_queue_runner.infrastructure.path_policy import PathPolicyError, validate_project_path
 from ai_queue_runner.infrastructure.process_runner import ProcessRunner, ProcessRunResult
 from ai_queue_runner.infrastructure.repositories import (
@@ -22,6 +25,7 @@ from ai_queue_runner.infrastructure.repositories import (
 )
 
 _OUTPUT_TAIL_BYTES = 4096
+_SUMMARY_TAIL_BYTES = 64 * 1024
 
 
 class ExecutionService:
@@ -98,14 +102,17 @@ class ExecutionService:
                 ),
             )
         except asyncio.CancelledError:
+            _populate_result_summary(run, adapter, stdout_path)
             self._record_cancelled(task_repo, task, run, agent_state)
             session.commit()
             raise
         except OSError as exc:
+            _populate_result_summary(run, adapter, stdout_path)
             self._record_spawn_failure(task_repo, task, run, agent_state, exc)
             session.commit()
             return run
 
+        _populate_result_summary(run, adapter, stdout_path)
         self._record_result(
             task_repo,
             task,
@@ -296,14 +303,25 @@ def _read_output_tail(stderr_path: Path, stdout_path: Path) -> str:
     return "\n".join(part for path in (stderr_path, stdout_path) if (part := _read_tail(path)))
 
 
-def _read_tail(path: Path) -> str:
+def _read_tail(path: Path, max_bytes: int = _OUTPUT_TAIL_BYTES) -> str:
     try:
         with path.open("rb") as stream:
             stream.seek(0, 2)
-            stream.seek(max(0, stream.tell() - _OUTPUT_TAIL_BYTES))
+            stream.seek(max(0, stream.tell() - max_bytes))
             return stream.read().decode("utf-8", errors="replace").strip()
     except FileNotFoundError:
         return ""
+
+
+def _populate_result_summary(run: TaskRun, adapter: AgentAdapter, stdout_path: Path) -> None:
+    summarizer = getattr(adapter, "summarize_output", default_summarize_output)
+    if not callable(summarizer):
+        run.result_summary = None
+        return
+    try:
+        run.result_summary = summarizer(_read_tail(stdout_path, _SUMMARY_TAIL_BYTES))
+    except Exception:
+        run.result_summary = None
 
 
 def _matches_usage_limit(output: str, patterns: list[str]) -> bool:

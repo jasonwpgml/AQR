@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QLabel, QPlainTextEdit, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QLabel, QPlainTextEdit, QTabWidget, QVBoxLayout, QWidget
+
+from ai_queue_runner.application.log_rendering import render_pretty
 
 _NO_RUN = "실행 기록이 없습니다."
 _NO_FILE = "로그 파일이 없습니다."
@@ -24,7 +26,9 @@ class LogViewer(QWidget):
     ) -> None:
         super().__init__(parent)
         self._run: object | None = None
+        self._agent: str | None = None
         self.run_label = QLabel(_NO_RUN)
+        self.raw_checkbox = QCheckBox("원본 보기")
         self.stdout_view = self._new_text_view()
         self.stderr_view = self._new_text_view()
         self.tabs = QTabWidget()
@@ -34,12 +38,14 @@ class LogViewer(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.run_label)
+        layout.addWidget(self.raw_checkbox)
         layout.addWidget(self.tabs, 1)
 
         self.timer = QTimer(self)
         self.timer.setInterval(poll_interval_ms)
         self.timer.timeout.connect(self.refresh)
         self.timer.start()
+        self.raw_checkbox.toggled.connect(self.refresh)
         self.clear()
 
     @staticmethod
@@ -59,6 +65,7 @@ class LogViewer(QWidget):
             return
         attempt = getattr(run, "attempt", "?")
         agent = getattr(getattr(run, "agent", ""), "value", getattr(run, "agent", ""))
+        self._agent = str(agent) or None
         exit_code = getattr(run, "exit_code", None)
         exit_text = "실행 중" if exit_code is None else f"종료 코드 {exit_code}"
         self.run_label.setText(f"시도 {attempt} · {str(agent).title()} · {exit_text}")
@@ -66,6 +73,7 @@ class LogViewer(QWidget):
 
     def clear(self) -> None:
         self._run = None
+        self._agent = None
         self.run_label.setText(_NO_RUN)
         self.stdout_view.setPlainText(_NO_RUN)
         self.stderr_view.setPlainText(_NO_RUN)
@@ -76,14 +84,18 @@ class LogViewer(QWidget):
         self._set_file_text(self.stdout_view, getattr(self._run, "stdout_path", None))
         self._set_file_text(self.stderr_view, getattr(self._run, "stderr_path", None))
 
-    @staticmethod
-    def _set_file_text(view: QPlainTextEdit, raw_path: object) -> None:
+    def _set_file_text(self, view: QPlainTextEdit, raw_path: object) -> None:
         if not raw_path:
             text = _NO_FILE
         else:
             path = Path(str(raw_path))
             try:
-                text = _read_visible_tail(path) if path.is_file() else _NO_FILE
+                raw_text = _read_visible_tail(path) if path.is_file() else _NO_FILE
+                text = (
+                    raw_text
+                    if self.raw_checkbox.isChecked()
+                    else render_pretty(raw_text, agent=self._agent)
+                )
             except OSError as exc:
                 text = f"로그를 읽을 수 없습니다: {exc}"
         if view.toPlainText() == text:

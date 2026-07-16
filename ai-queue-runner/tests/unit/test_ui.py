@@ -292,6 +292,34 @@ def test_log_viewer_bounds_visible_text_but_preserves_file(app, tmp_path):
     assert log_path.stat().st_size == len(content)
 
 
+def test_log_viewer_toggles_between_pretty_and_raw_content(app, tmp_path):
+    log_path = tmp_path / "claude.jsonl"
+    raw_content = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"text","text":"Readable result"}]}}\n'
+    )
+    log_path.write_text(raw_content, encoding="utf-8")
+    viewer = LogViewer()
+    viewer.stop_polling()
+
+    viewer.set_run(
+        SimpleNamespace(
+            attempt=1,
+            agent=AgentName.CLAUDE,
+            exit_code=0,
+            stdout_path=str(log_path),
+            stderr_path=None,
+        )
+    )
+
+    assert viewer.raw_checkbox.text() == "원본 보기"
+    assert viewer.raw_checkbox.isChecked() is False
+    assert viewer.stdout_view.toPlainText() == "Readable result\n"
+    viewer.raw_checkbox.setChecked(True)
+    assert viewer.stdout_view.toPlainText() == raw_content
+    viewer.close()
+
+
 def test_tray_notification_falls_back_when_system_tray_is_unavailable(app, monkeypatch):
     messages = []
     tray = QueueSystemTray(fallback=messages.append)

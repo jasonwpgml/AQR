@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from ai_queue_runner.config.defaults import AgentSection
 from ai_queue_runner.domain.enums import AgentName, ErrorType
 from ai_queue_runner.domain.models import Task
@@ -60,6 +62,30 @@ class CodexAdapter:
 
     def build_stdin(self, task: Task) -> str:
         return render_prompt(task, "codex_wrapper.txt")
+
+    def summarize_output(self, output: str) -> str | None:
+        summary = None
+        for line in output.splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "agent_message":
+                message = event.get("text") or event.get("message")
+            else:
+                item = event.get("item")
+                message = (
+                    item.get("text") or item.get("message")
+                    if event.get("type") == "item.completed"
+                    and isinstance(item, dict)
+                    and item.get("type") == "agent_message"
+                    else None
+                )
+            if isinstance(message, str) and message.strip():
+                summary = message.strip()
+        return summary[:500] if summary else None
 
     def classify_error(self, output: str, exit_code: int | None) -> ErrorType:
         return classify_cli_error(output, exit_code, self._settings, _AUTH_PATTERNS)

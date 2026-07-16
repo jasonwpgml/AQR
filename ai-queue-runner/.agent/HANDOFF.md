@@ -1,40 +1,35 @@
 FROM: codex
-TO: maintenance
-TASK: T001-T016 / AI Queue Runner v0.1
+TO: claude
+TASK: T017
 STATUS: completed
 
-DELIVERED:
-- Persistent SQLite queue with strict state transitions, dependencies, scoring, project locks, and atomic per-agent reservation
-- Async Claude/Codex process execution with stdin prompts, streamed logs, timeout/cancel, retry, usage-limit/auth handling, and PID+creation-time crash recovery
-- Safe absolute-path/allowed-root policy and conservative CLI flags
-- PySide6 desktop task management, immediate run, move-to-top, archive, approvals, logs, agent availability, tray controls, and lifecycle notifications
-- SQLite online backup, effective-config export, per-user Windows startup registration, and PyInstaller onedir packaging
-- UTF-8 README, architecture, design, third-party notices, build and soak scripts
+CHANGED:
+- src/ai_queue_runner/application/log_rendering.py
+- src/ai_queue_runner/ui/log_viewer.py
+- src/ai_queue_runner/infrastructure/adapters/base.py
+- src/ai_queue_runner/infrastructure/adapters/claude.py
+- src/ai_queue_runner/infrastructure/adapters/codex.py
+- src/ai_queue_runner/application/execution_service.py
+- tests/unit/test_log_rendering.py
+- tests/unit/test_adapters.py
+- tests/unit/test_ui.py
+- tests/integration/test_execution_service.py
+- .agent/STATE.md
+- .agent/TASKS.md
+- .agent/HANDOFF.md
 
-VERIFIED 2026-07-16:
-- `python -m pytest -q` -> 186 passed
-- `python -m ruff check src tests` -> clean
-- Source Qt offscreen smoke -> exit 0
-- 20-task queue with mid-run runtime restart -> passed; accelerated soak wrapper -> passed
-- Real Codex noninteractive smoke -> `QUEUE_SMOKE_OK`
-- Real Claude Code 2.1.211 noninteractive/no-session smoke -> `QUEUE_CLAUDE_SMOKE_OK`
-- Claude's successful `rate_limit_event(status=allowed)` captured and covered by classifier regression
-- PyInstaller 6.21.0 onedir build -> `dist/AIQueueRunner/AIQueueRunner.exe`
-- Packaged version, hidden GUI, config export, verified DB backup -> exit 0
-- Packaged Qt `qwindows.dll` -> present
-- Ralph-scoped anti-slop pass -> redundant service aliases removed, duplicated availability logic consolidated, fail-safe paths regression-tested
-
-SAFETY INVARIANTS:
-- Empty `allowed_project_roots` blocks execution.
-- Prompts never enter shell strings or persisted command arrays.
-- Recovery kills a PID only when exact OS creation time still matches; unknown or reused identities are not killed.
-- Status changes go through `TaskRepository.set_status()`; direct task status assignment remains confined to that repository.
-- Project exclusivity is rechecked inside the reservation CAS, so concurrent agents cannot reserve different tasks for the same project.
-- Unknown config keys/agent tables are hard errors; partial agent configuration preserves both built-ins.
-
-REMAINING VALIDATION GAP:
-- The deterministic 20-task soak scenario passes, but the literal eight-hour wall-clock run was not held open in this session. Run `scripts/run_soak.ps1` for that operational-duration qualification.
+VERIFIED:
+- `..\.venv\Scripts\python -m pytest -q` -> 196 passed in 8.66s
+- `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
+- Captured Claude log smoke -> session/tool/result rendered; allowed rate-limit event and known JSON envelopes hidden
+- Adapter diff audit -> build_command and classify_error behavior unchanged
+- Renderer import audit -> no Qt imports
 
 NOTES:
-- PyInstaller reports missing optional SQLAlchemy database drivers only; SQLite/PySide packaged smokes pass.
-- Qt/PySide redistribution obligations are summarized in `THIRD_PARTY_NOTICES.md` and must be reviewed before external distribution.
+- Pretty rendering is the default; the Korean `원본 보기` checkbox switches both log tabs to capped raw content.
+- Claude and Codex summaries use their final result/agent-message events, truncate to 500 characters, and are persisted from at most the last 64KB of stdout for every terminal execution path.
+- Test fixtures use shortened representative shapes from the captured Claude log and contain no signatures or credentials.
+- Existing AIDEV anchors were reviewed and remain valid; no new anchor was needed because the new constraints are explicit in code and tests.
+
+RISKS:
+- None known.

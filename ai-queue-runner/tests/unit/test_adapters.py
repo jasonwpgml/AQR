@@ -117,6 +117,38 @@ def test_claude_allowed_rate_limit_event_is_not_an_error():
     assert ClaudeAdapter().classify_error(output, 0) is ErrorType.UNKNOWN
 
 
+def test_claude_summary_extracts_final_result_and_truncates():
+    output = "\n".join(
+        [
+            '{"type":"assistant","message":{"content":[]}}',
+            '{"type":"result","result":"earlier"}',
+            '{"type":"result","result":"' + ("x" * 600) + '"}',
+        ]
+    )
+
+    summary = ClaudeAdapter().summarize_output(output)
+
+    assert summary == "x" * 500
+    assert ClaudeAdapter().summarize_output("") is None
+    assert ClaudeAdapter().summarize_output("not json") is None
+
+
+def test_codex_summary_extracts_last_agent_message_and_truncates():
+    output = "\n".join(
+        [
+            '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}',
+            '{"type":"item.completed","item":{"type":"command_execution"}}',
+            '{"type":"agent_message","message":"' + ("y" * 600) + '"}',
+        ]
+    )
+
+    summary = CodexAdapter().summarize_output(output)
+
+    assert summary == "y" * 500
+    assert CodexAdapter().summarize_output("") is None
+    assert CodexAdapter().summarize_output("not json") is None
+
+
 @pytest.mark.parametrize("adapter_type", [ClaudeAdapter, CodexAdapter])
 def test_success_text_discussing_limits_is_not_an_error(adapter_type):
     output = '{"type":"assistant","message":"Explain rate limit and authentication failed"}'
