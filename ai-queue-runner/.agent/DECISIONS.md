@@ -21,3 +21,4 @@ D016 Repositories never commit; the caller owns the transaction (enables single-
 D017 Human-facing diagrams live in docs/ARCHITECTURE.md (Korean, Mermaid) and must be updated in the same task that changes tables/states/modules
 D018 Reservation uses compare-and-swap UPDATEs (WHERE status='waiting' / current_task_id IS NULL) instead of BEGIN IMMEDIATE; a lost race rolls back and re-selects
 D019 agent_states.current_task_id is claimed at reservation time (not run start), so one agent can never hold two reservations; execution/recovery must clear it
+D020 Adapters only build commands and classify errors; ProcessRunner owns execution (deviation from plan §6.1 run())
