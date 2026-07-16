@@ -1,30 +1,36 @@
-FROM: claude
-TO: user / next agent
-TASK: T006+T007 (Phase 2 atomic reservation + reserved-timeout recovery)
+FROM: codex
+TO: claude
+TASK: T008
 STATUS: completed
 
 CHANGED:
-- src/ai_queue_runner/application/scheduler_service.py (added reserve_next_task)
-- src/ai_queue_runner/application/recovery_service.py (new)
-- src/ai_queue_runner/infrastructure/database.py (SQLite busy timeout 30s)
-- tests/integration/test_task_reservation.py (new, incl. 10-round race test)
-- tests/integration/test_recovery.py (new)
-- docs/ARCHITECTURE.md, README.md, .agent/* updates
+- src/ai_queue_runner/infrastructure/process_runner.py
+- tests/integration/test_process_runner.py
+- pyproject.toml
+- .agent/STATE.md
+- .agent/TASKS.md
+- .agent/HANDOFF.md
 
 VERIFIED:
-- ../.venv/Scripts/python -m pytest -q            -> 82 passed
-- ../.venv/Scripts/python -m ruff check src tests -> clean
-- concurrency test re-run in isolation            -> 10 passed
+- ..\.venv\Scripts\python -m pip install -e .[dev]
+  -> Successfully installed ai-queue-runner-0.1.0 pytest-asyncio-1.4.0
+- ..\.venv\Scripts\python -m pytest -q
+  -> 90 passed in 2.86s
+- ..\.venv\Scripts\python -m ruff check src tests
+  -> All checks passed!
+- rg -n "shell=True|os.system" src/
+  -> no matches
 
 NOTES:
-- reserve_next_task owns its transaction and commit (selection + claim in one txn, D018).
-- Both CAS updates must succeed (task still waiting AND agent has no current_task_id);
-  otherwise rollback + re-select, up to max_attempts=3.
-- release_stale_reservations only touches `reserved` tasks; `running` recovery is
-  Phase 3's PID-based crash recovery (see AIDEV-NOTE in recovery_service.py).
+- ProcessRunner uses asyncio.create_subprocess_exec with argument lists only and returns
+  non-zero exit codes instead of raising.
+- stdout and stderr are drained concurrently through incremental UTF-8 decoders and flushed
+  after every chunk, preserving partial logs without deadlocking on large output.
+- Timeout and cancellation kill the child and shield process.wait() until cleanup completes;
+  cancellation then re-raises asyncio.CancelledError.
+- Eight integration tests cover success, non-zero exit, separated stderr, cwd, timeout,
+  cancellation, multi-megabyte output, and incremental streaming.
 
 RISKS:
-- Phase 3 execution MUST transition reserved->running before spawning the CLI,
-  or the timeout release could double-run a started task (D019 note).
-- `now` parameter of reserve_next_task is reused across retry attempts only when
-  caller passes it explicitly; tests do, production should pass None.
+- process.kill() terminates the direct child as explicitly allowed by T008; dedicated descendant
+  process-tree handling remains future hardening if an adapter launches grandchildren.
