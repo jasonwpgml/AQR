@@ -44,10 +44,12 @@ project_lock_mode = "exclusive"
 enabled = true
 executable = "claude"
 run_timeout_minutes = 120
+default_cooldown_minutes = 300
 limit_patterns = ["usage limit", "rate limit", "rate_limit", "session limit"]
 
 [agents.codex]
 enabled = true
 executable = "codex"
 run_timeout_minutes = 120
+default_cooldown_minutes = 300
 limit_patterns = ["usage limit", "rate limit", "rate_limit", "session limit"]

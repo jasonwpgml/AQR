@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from datetime import datetime, timedelta
 from importlib.resources import files
 from typing import Protocol
 
 from ai_queue_runner.config.defaults import AgentSection
+from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentName, ErrorType
 from ai_queue_runner.domain.models import Task
 
@@ -27,12 +29,33 @@ class AgentAdapter(Protocol):
 
     def summarize_output(self, output: str) -> str | None: ...
 
+    def extract_limit_reset(self, output: str) -> datetime | None: ...
+
     def classify_error(self, output: str, exit_code: int | None) -> ErrorType: ...
 
 
 def summarize_output(_output: str) -> str | None:
     """Default summary hook for adapters that do not expose one."""
     return None
+
+
+def extract_limit_reset(_output: str) -> datetime | None:
+    """Default reset hook for adapters that do not expose one."""
+    return None
+
+
+def validated_limit_reset(
+    value: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Return a plausible naive-UTC reset time or reject it."""
+    if value is None or value.tzinfo is not None:
+        return None
+    now = utcnow() if now is None else now
+    if value < now or value > now + timedelta(days=7):
+        return None
+    return value
 
 
 def executable_is_installed(executable: str) -> bool:

@@ -172,6 +172,39 @@ def test_tick_promotes_retry_and_due_agent_before_reserving(runtime_app) -> None
         runtime.shutdown()
 
 
+def test_tick_keeps_future_cooldown_agent_unavailable(runtime_app) -> None:
+    factory, config, project = runtime_app
+    available_at = utcnow() + timedelta(minutes=5)
+    with factory() as session:
+        state = AgentStateRepository(session).get_or_create(AgentName.CLAUDE)
+        state.status = AgentStatus.COOLDOWN
+        state.available_at = available_at
+        task = TaskRepository(session).add(
+            Task(
+                title="future cooldown",
+                prompt="work",
+                project_path=str(project),
+                agent_policy=AgentPolicy.CLAUDE,
+            )
+        )
+        session.commit()
+        task_id = task.id
+
+    runtime = make_runtime(factory, config, {AgentName.CLAUDE: FakeAdapter()})
+    try:
+        assert runtime.tick_once() == ()
+        assert TaskService(factory, config).get(task_id).status is TaskStatus.WAITING
+        state = next(
+            state
+            for state in AgentService(factory).list()
+            if state.agent is AgentName.CLAUDE
+        )
+        assert state.status is AgentStatus.COOLDOWN
+        assert state.available_at == available_at
+    finally:
+        runtime.shutdown()
+
+
 def test_cancel_running_propagates_to_execution_service(runtime_app) -> None:
     factory, config, project = runtime_app
     tasks = TaskService(factory, config)

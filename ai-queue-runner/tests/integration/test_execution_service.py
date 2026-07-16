@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import timedelta
+from datetime import UTC, timedelta
 from pathlib import Path
 
 import pytest
@@ -15,6 +15,7 @@ from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentName, AgentStatus, ErrorType, TaskStatus
 from ai_queue_runner.domain.models import Task
+from ai_queue_runner.infrastructure.adapters.claude import ClaudeAdapter
 from ai_queue_runner.infrastructure.database import (
     create_db_engine,
     init_db,
@@ -224,11 +225,14 @@ async def test_usage_limit_returns_task_to_queue_and_cools_down_agent(
     config: AppConfig,
     project_path: Path,
 ) -> None:
+    config.agents[AgentName.CLAUDE.value].default_cooldown_minutes = 17
     adapter = python_adapter(
         "import sys; print('USAGE LIMIT reached', file=sys.stderr); sys.exit(1)"
     )
+    earliest = utcnow() + timedelta(minutes=17)
 
     task, run = await execute_reserved(session, config, project_path, adapter)
+    latest = utcnow() + timedelta(minutes=17)
 
     assert task.status is TaskStatus.WAITING
     assert task.retry_count == 0
@@ -238,8 +242,33 @@ async def test_usage_limit_returns_task_to_queue_and_cools_down_agent(
     assert run.error_type is ErrorType.USAGE_LIMIT
     state = AgentStateRepository(session).get(adapter.name)
     assert state.status is AgentStatus.COOLDOWN
-    assert state.available_at is None
+    assert earliest <= state.available_at <= latest
     assert state.current_task_id is None
+    assert state.available_at.isoformat(sep=" ", timespec="seconds") in task.last_error
+
+
+async def test_usage_limit_uses_exact_reset_extracted_from_output(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    reset_at = (utcnow() + timedelta(hours=2)).replace(microsecond=0)
+    reset_timestamp = int(reset_at.replace(tzinfo=UTC).timestamp())
+    event = (
+        '{"type":"rate_limit_event","rate_limit_info":'
+        f'{{"status":"rejected","resetsAt":{reset_timestamp}}}}}'
+    )
+    adapter = python_adapter(f"import sys; print({event!r}); sys.exit(1)")
+    adapter.extract_limit_reset = ClaudeAdapter().extract_limit_reset
+
+    task, run = await execute_reserved(session, config, project_path, adapter)
+
+    state = AgentStateRepository(session).get(adapter.name)
+    assert run.error_type is ErrorType.USAGE_LIMIT
+    assert task.status is TaskStatus.WAITING
+    assert state.status is AgentStatus.COOLDOWN
+    assert state.available_at == reset_at
+    assert reset_at.isoformat(sep=" ", timespec="seconds") in task.last_error
 
 
 async def test_success_output_discussing_rate_limits_remains_successful(

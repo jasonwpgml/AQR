@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, timedelta
 from pathlib import Path
 
 import pytest
 
 from ai_queue_runner.config.defaults import AgentSection
+from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import ErrorType
 from ai_queue_runner.domain.models import Task
 from ai_queue_runner.infrastructure.adapters.claude import ClaudeAdapter
@@ -115,6 +117,46 @@ def test_claude_allowed_rate_limit_event_is_not_an_error():
     )
 
     assert ClaudeAdapter().classify_error(output, 0) is ErrorType.UNKNOWN
+
+
+def test_claude_extracts_exact_reset_from_rejected_rate_limit_event():
+    reset_at = (utcnow() + timedelta(hours=2)).replace(microsecond=0)
+    reset_timestamp = int(reset_at.replace(tzinfo=UTC).timestamp())
+    output = (
+        '{"type":"rate_limit_event","rate_limit_info":'
+        f'{{"status":"rejected","resetsAt":{reset_timestamp}}}}}'
+    )
+
+    assert ClaudeAdapter().extract_limit_reset(output) == reset_at
+
+
+def test_claude_ignores_allowed_or_malformed_reset_events():
+    reset_timestamp = int((utcnow() + timedelta(hours=2)).replace(tzinfo=UTC).timestamp())
+    allowed = (
+        '{"type":"rate_limit_event","rate_limit_info":'
+        f'{{"status":"allowed","resetsAt":{reset_timestamp}}}}}'
+    )
+
+    assert ClaudeAdapter().extract_limit_reset(allowed) is None
+    assert ClaudeAdapter().extract_limit_reset("{malformed json") is None
+
+
+def test_codex_extracts_relative_reset_with_tolerance():
+    earliest = utcnow() + timedelta(minutes=150)
+
+    reset_at = CodexAdapter().extract_limit_reset("Try again in 2 hours 30 minutes.")
+
+    latest = utcnow() + timedelta(minutes=150)
+    assert reset_at is not None
+    assert earliest <= reset_at <= latest
+
+
+def test_codex_rejects_garbage_and_past_absolute_reset():
+    adapter = CodexAdapter()
+
+    assert adapter.extract_limit_reset("quota message without a reset time") is None
+    assert adapter.extract_limit_reset("resets at 2020-01-01T00:00:00Z") is None
+    assert adapter.extract_limit_reset("try again in 8 days") is None
 
 
 def test_claude_summary_extracts_final_result_and_truncates():
