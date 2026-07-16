@@ -12,9 +12,9 @@ from ai_queue_runner.domain.enums import AgentName, ErrorType
 from ai_queue_runner.domain.models import Task
 from ai_queue_runner.infrastructure.adapters.base import (
     classify_cli_error,
-    executable_is_installed,
     read_version,
     render_prompt,
+    resolve_executable,
     validated_limit_reset,
 )
 
@@ -54,10 +54,11 @@ class CodexAdapter:
         executable: str | None = None,
     ) -> None:
         self._settings = settings or AgentSection()
-        self._executable = executable or self._settings.executable or "codex"
+        explicit = executable if executable is not None else self._settings.executable
+        self._executable, self._executable_found = resolve_executable("codex", explicit)
 
     def is_installed(self) -> bool:
-        return self._settings.enabled and executable_is_installed(self._executable)
+        return self._settings.enabled and self._executable_found
 
     def get_version(self) -> str | None:
         return read_version(self._executable)

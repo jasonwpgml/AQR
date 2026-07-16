@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from datetime import datetime, timedelta
 from importlib.resources import files
+from pathlib import Path
 from typing import Protocol
 
 from ai_queue_runner.config.defaults import AgentSection
@@ -58,8 +60,37 @@ def validated_limit_reset(
     return value
 
 
-def executable_is_installed(executable: str) -> bool:
-    return shutil.which(executable) is not None
+def resolve_executable(name: str, explicit: str | None = None) -> tuple[str, bool]:
+    """Resolve one CLI once, preserving an explicit custom override."""
+    expanded = os.path.expanduser(os.path.expandvars(explicit)) if explicit else None
+    # AIDEV-NOTE: config defaults use the bare CLI name in the override field; those
+    # values must still enter discovery so Explorer-launched builds reach known locations.
+    if expanded and expanded != name:
+        path = Path(expanded)
+        return (str(path.resolve()), True) if path.is_file() else (expanded, False)
+
+    if discovered := shutil.which(name):
+        return str(Path(discovered).resolve()), True
+
+    for candidate in _well_known_executable_paths(name):
+        if candidate.is_file():
+            return str(candidate.resolve()), True
+    return name, False
+
+
+def _well_known_executable_paths(name: str) -> tuple[Path, ...]:
+    if name == "claude" and (user_profile := os.environ.get("USERPROFILE")):
+        return (Path(user_profile) / ".local" / "bin" / "claude.exe",)
+    if name == "codex" and (local_app_data := os.environ.get("LOCALAPPDATA")):
+        return (
+            Path(local_app_data)
+            / "Programs"
+            / "OpenAI"
+            / "Codex"
+            / "bin"
+            / "codex.exe",
+        )
+    return ()
 
 
 def read_version(executable: str) -> str | None:

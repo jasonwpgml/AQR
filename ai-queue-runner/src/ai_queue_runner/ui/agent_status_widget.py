@@ -40,6 +40,10 @@ class AgentStatusWidget(QGroupBox):
         self.agent = agent
         self.status_label = QLabel("확인 안 됨")
         self.current_task_label = QLabel("현재 작업: 없음")
+        self.cli_warning_label = QLabel()
+        self.cli_warning_label.setWordWrap(True)
+        self.cli_warning_label.setStyleSheet("color: #b91c1c;")
+        self.cli_warning_label.hide()
         self.current_task_label.setTextInteractionFlags(
             self.current_task_label.textInteractionFlags()
         )
@@ -71,6 +75,7 @@ class AgentStatusWidget(QGroupBox):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.addLayout(form)
         layout.addWidget(self.current_task_label)
+        layout.addWidget(self.cli_warning_label)
         layout.addWidget(self.apply_button)
 
     def set_state(self, state: object | None) -> None:
@@ -92,6 +97,22 @@ class AgentStatusWidget(QGroupBox):
             self.available_at_edit.setDateTime(QDateTime(local))
         error = getattr(state, "last_error", None)
         self.setToolTip(str(error) if error else "")
+
+    def set_cli_resolvable(self, *, enabled: bool, resolvable: bool) -> None:
+        missing = enabled and not resolvable
+        if missing:
+            self.cli_warning_label.setText(
+                f"{self.agent.value} CLI를 찾을 수 없습니다. "
+                "설정에서 executable 경로를 지정하세요."
+            )
+            self.cli_warning_label.show()
+        else:
+            self.cli_warning_label.clear()
+            self.cli_warning_label.hide()
+        self.status_combo.setEnabled(not missing)
+        self.available_at_check.setEnabled(not missing)
+        self.available_at_edit.setEnabled(not missing and self.available_at_check.isChecked())
+        self.apply_button.setEnabled(not missing)
 
     def _select_status(self, status: AgentStatus) -> None:
         for index in range(self.status_combo.count()):

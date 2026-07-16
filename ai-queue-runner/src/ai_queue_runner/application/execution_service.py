@@ -265,6 +265,7 @@ class ExecutionService:
         exc: OSError,
     ) -> None:
         finished_at = utcnow()
+        attempted_executable = run.command[0] if run.command else "알 수 없음"
         run.pid = None
         run.exit_code = None
         run.finished_at = finished_at
@@ -274,7 +275,10 @@ class ExecutionService:
             run,
             agent_state,
             ErrorType.CRASH,
-            f"{type(exc).__name__}: {exc}",
+            "CLI를 시작할 수 없습니다. "
+            f"시도한 실행 파일: {attempted_executable}. "
+            "설정의 executable 경로와 CLI 설치 상태를 확인하세요. "
+            f"({type(exc).__name__}: {exc})",
             finished_at,
         )
 

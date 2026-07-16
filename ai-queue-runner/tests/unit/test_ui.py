@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ from ai_queue_runner.application.task_service import TaskDraft, TaskService
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.config.exporter import export_config
 from ai_queue_runner.config.loader import load_config
+from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import (
     AgentName,
     AgentPolicy,
@@ -77,6 +79,24 @@ def test_task_table_model_exposes_compact_korean_projection(app):
     assert model.data(model.index(0, TaskColumn.STATUS)) == "대기"
     assert model.data(model.index(0, TaskColumn.PROJECT)) == "sample"
     assert model.data(model.index(0, 0), Qt.ItemDataRole.UserRole).id == 1
+
+
+def test_retry_wait_row_shows_local_retry_time_and_error_tooltip(app):
+    retry_at = (utcnow() + timedelta(minutes=12)).replace(second=0, microsecond=0)
+    task = make_task(
+        status=TaskStatus.RETRY_WAIT,
+        not_before=retry_at,
+        last_error="CLI를 찾을 수 없습니다",
+    )
+    model = TaskTableModel([task])
+    status_index = model.index(0, TaskColumn.STATUS)
+
+    expected_time = retry_at.replace(tzinfo=UTC).astimezone().strftime("%H:%M")
+    assert model.data(status_index) == f"재시도 대기 ({expected_time})"
+    assert "CLI를 찾을 수 없습니다" in model.data(
+        status_index,
+        Qt.ItemDataRole.ToolTipRole,
+    )
 
 
 def test_task_dialog_validates_and_builds_draft_with_dependencies(app):
@@ -176,6 +196,9 @@ class FakeTaskService:
     def list_runs(self, task_id):
         return []
 
+    def delete(self, task_id):
+        self.tasks = [task for task in self.tasks if task.id != task_id]
+
 
 class FakeAgentService:
     def __init__(self):
@@ -200,6 +223,8 @@ class FakeRuntime:
 
     def __init__(self):
         self.reserved_now = []
+        self.cancelled = []
+        self.shutdown_calls = 0
 
     def start(self):
         self.running = True
@@ -214,6 +239,13 @@ class FakeRuntime:
     def reserve_now(self, task_id):
         self.reserved_now.append(task_id)
         return True
+
+    def cancel_running(self, task_id):
+        self.cancelled.append(task_id)
+        return True
+
+    def shutdown(self):
+        self.shutdown_calls += 1
 
 
 def test_main_window_constructs_and_refreshes_from_services(app):
@@ -238,6 +270,109 @@ def test_main_window_constructs_and_refreshes_from_services(app):
     window.start_scheduler()
     assert window.pause_button.isEnabled()
 
+    window.close()
+
+
+def test_delete_button_is_disabled_for_running_and_enabled_for_succeeded(app):
+    running = make_task(1, status=TaskStatus.RUNNING)
+    succeeded = make_task(2, status=TaskStatus.SUCCEEDED)
+    window = MainWindow(
+        FakeTaskService([running, succeeded]),
+        FakeAgentService(),
+        FakeRuntime(),
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+
+    window.task_table.selectRow(0)
+    app.processEvents()
+    assert window.delete_button.isEnabled() is False
+
+    window.task_table.selectRow(1)
+    app.processEvents()
+    assert window.delete_button.isEnabled() is True
+    assert window.task_table.contextMenuPolicy() is Qt.ContextMenuPolicy.CustomContextMenu
+    window.close()
+
+
+def test_exit_without_running_tasks_quits_without_dialog(app, monkeypatch):
+    runtime = FakeRuntime()
+    window = MainWindow(
+        FakeTaskService([make_task()]),
+        FakeAgentService(),
+        runtime,
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+    monkeypatch.setattr(
+        "ai_queue_runner.ui.main_window.QMessageBox.question",
+        lambda *_args: pytest.fail("no exit dialog expected without running tasks"),
+    )
+    quit_calls = []
+    monkeypatch.setattr(QApplication, "quit", lambda _self: quit_calls.append(True))
+
+    window._quit_application()
+
+    assert runtime.cancelled == []
+    assert runtime.shutdown_calls == 1
+    assert quit_calls == [True]
+    window.close()
+
+
+def test_exit_with_running_task_confirms_cancels_and_quits(app, monkeypatch):
+    task = make_task(status=TaskStatus.RUNNING)
+    runtime = FakeRuntime()
+    window = MainWindow(
+        FakeTaskService([task]),
+        FakeAgentService(),
+        runtime,
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+    questions = []
+
+    def confirm(*args):
+        questions.append(args[2])
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr("ai_queue_runner.ui.main_window.QMessageBox.question", confirm)
+    quit_calls = []
+    monkeypatch.setattr(QApplication, "quit", lambda _self: quit_calls.append(True))
+
+    window._quit_application()
+
+    assert questions == ["정말 종료하시겠습니까? 진행 중인 작업은 모두 중단됩니다."]
+    assert runtime.cancelled == [task.id]
+    assert runtime.shutdown_calls == 1
+    assert quit_calls == [True]
+    window.close()
+
+
+def test_enabled_agent_with_missing_cli_shows_warning(app):
+    missing_claude = SimpleNamespace(name=AgentName.CLAUDE, is_installed=lambda: False)
+    window = MainWindow(
+        FakeTaskService([]),
+        FakeAgentService(),
+        FakeRuntime(),
+        adapters={AgentName.CLAUDE: missing_claude},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+    widget = window.agent_widgets[AgentName.CLAUDE]
+
+    assert "claude CLI를 찾을 수 없습니다" in widget.cli_warning_label.text()
+    assert widget.apply_button.isEnabled() is False
     window.close()
 
 

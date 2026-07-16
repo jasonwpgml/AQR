@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy import delete as sql_delete
 from sqlalchemy.orm import Session
 
 from ai_queue_runner.config.defaults import AppConfig
@@ -249,6 +250,20 @@ class TaskService:
                 task.updated_at = utcnow()
                 session.commit()
             return _to_task_view(task)
+
+    def delete(self, task_id: int) -> None:
+        with self._session_factory() as session:
+            repo = TaskRepository(session)
+            task = self._require_task(repo, task_id)
+            if task.status in {TaskStatus.RESERVED, TaskStatus.RUNNING}:
+                raise ValueError("reserved or running tasks must be cancelled before deletion")
+            dependent_ids = sorted(dependent.id for dependent in task.dependents)
+            if dependent_ids:
+                joined_ids = ", ".join(str(dependent_id) for dependent_id in dependent_ids)
+                raise ValueError(f"task {task_id} is required by dependent tasks: {joined_ids}")
+            session.execute(sql_delete(TaskRun).where(TaskRun.task_id == task_id))
+            repo.delete(task)
+            session.commit()
 
     def list_runs(self, task_id: int) -> list[RunView]:
         with self._session_factory() as session:

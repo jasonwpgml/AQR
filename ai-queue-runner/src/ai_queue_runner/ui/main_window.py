@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -85,10 +86,12 @@ class MainWindow(QMainWindow):
         self.retry_button = QPushButton("재시도")
         self.archive_button = QPushButton("완료 보관")
         self.cancel_button = QPushButton("취소")
+        self.delete_button = QPushButton("삭제")
         self.stop_button = QPushButton("실행 중단")
         self.open_log_button = QPushButton("로그 열기")
         self.open_folder_button = QPushButton("프로젝트 폴더")
         self.refresh_button = QPushButton("새로고침")
+        self.exit_button = QPushButton("종료")
 
         self.start_button.clicked.connect(self.start_scheduler)
         self.pause_button.clicked.connect(self.pause_scheduler)
@@ -101,10 +104,12 @@ class MainWindow(QMainWindow):
         self.retry_button.clicked.connect(self.retry_task)
         self.archive_button.clicked.connect(self.archive_task)
         self.cancel_button.clicked.connect(self.cancel_task)
+        self.delete_button.clicked.connect(self.delete_task)
         self.stop_button.clicked.connect(self.cancel_running_task)
         self.open_log_button.clicked.connect(self.open_log)
         self.open_folder_button.clicked.connect(self.open_project_folder)
         self.refresh_button.clicked.connect(self.refresh)
+        self.exit_button.clicked.connect(self._quit_application)
 
         self.status_filter = QComboBox()
         self.status_filter.setAccessibleName("작업 상태 필터")
@@ -136,10 +141,12 @@ class MainWindow(QMainWindow):
         header.setStretchLastSection(True)
         header.resizeSection(TaskColumn.PRIORITY, 72)
         header.resizeSection(TaskColumn.AGENT, 76)
-        header.resizeSection(TaskColumn.STATUS, 100)
+        header.resizeSection(TaskColumn.STATUS, 140)
         header.resizeSection(TaskColumn.TITLE, 330)
         self.task_table.selectionModel().selectionChanged.connect(self._selection_changed)
         self.task_table.doubleClicked.connect(lambda _index: self.edit_task())
+        self.task_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.task_table.customContextMenuRequested.connect(self._show_task_context_menu)
 
         self.details_view = QPlainTextEdit()
         self.details_view.setReadOnly(True)
@@ -168,6 +175,7 @@ class MainWindow(QMainWindow):
             self.retry_button,
             self.archive_button,
             self.cancel_button,
+            self.delete_button,
             self.stop_button,
             self.open_log_button,
             self.open_folder_button,
@@ -179,6 +187,7 @@ class MainWindow(QMainWindow):
             self.start_button,
             self.pause_button,
             self.settings_button,
+            self.exit_button,
         ):
             scheduler_controls.addWidget(widget)
         scheduler_controls.addStretch(1)
@@ -238,6 +247,16 @@ class MainWindow(QMainWindow):
         by_agent = {enum_value(getattr(state, "agent", "")): state for state in states}
         for agent, widget in self.agent_widgets.items():
             widget.set_state(by_agent.get(agent.value))
+            settings = self.config.agents.get(agent.value)
+            adapter = self._adapter_for_agent(agent)
+            try:
+                resolvable = bool(adapter is not None and adapter.is_installed())
+            except Exception:
+                resolvable = False
+            widget.set_cli_resolvable(
+                enabled=bool(settings is not None and settings.enabled),
+                resolvable=resolvable,
+            )
         self._restore_selection(selected_id)
         running = bool(getattr(self.runtime, "running", False))
         paused = bool(getattr(self.runtime, "paused", not running))
@@ -344,6 +363,10 @@ class MainWindow(QMainWindow):
                 TaskStatus.RETRY_WAIT.value,
                 TaskStatus.BLOCKED.value,
             }
+        )
+        self.delete_button.setEnabled(
+            has_task
+            and status not in {TaskStatus.RESERVED.value, TaskStatus.RUNNING.value}
         )
         running = has_task and status == TaskStatus.RUNNING.value
         if running and hasattr(self.runtime, "is_active"):
@@ -562,6 +585,39 @@ class MainWindow(QMainWindow):
         self._notify("실행 중단을 요청했습니다.")
         self.refresh()
 
+    def delete_task(self) -> None:
+        task = self._selected_task
+        if task is None:
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "작업 삭제",
+                f"'{getattr(task, 'title', '')}' 작업을 삭제하시겠습니까?\n\n"
+                "연결된 실행 기록도 함께 삭제됩니다.",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            self.task_service.delete(task.id)
+        except Exception as exc:
+            self._show_error("작업 삭제", exc)
+            return
+        self._selected_task = None
+        self._notify("작업과 실행 기록을 삭제했습니다.")
+        self.refresh()
+
+    def _show_task_context_menu(self, position: object) -> None:
+        index = self.task_table.indexAt(position)
+        if index.isValid():
+            self.task_table.selectRow(index.row())
+        menu = QMenu(self.task_table)
+        delete_action = menu.addAction("삭제")
+        delete_action.setEnabled(self.delete_button.isEnabled())
+        delete_action.triggered.connect(self.delete_task)
+        menu.exec(self.task_table.viewport().mapToGlobal(position))
+
     def _run_selected_action(self, title: str, method_name: str, success: str) -> None:
         if self._selected_task is None:
             return
@@ -612,6 +668,19 @@ class MainWindow(QMainWindow):
             None,
         )
 
+    def _adapter_for_agent(self, agent: AgentName) -> object | None:
+        for key in (agent, agent.value):
+            if key in self.adapters:
+                return self.adapters[key]
+        return next(
+            (
+                adapter
+                for adapter in self.adapters.values()
+                if enum_value(getattr(adapter, "name", "")) == agent.value
+            ),
+            None,
+        )
+
     def _set_agent_availability(
         self,
         agent: AgentName,
@@ -635,10 +704,46 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _quit_application(self) -> None:
+        active_tasks = self._tasks_requiring_exit_warning()
+        if active_tasks and (
+            QMessageBox.question(
+                self,
+                "AI Queue Runner 종료",
+                "정말 종료하시겠습니까? 진행 중인 작업은 모두 중단됩니다.",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        for task in active_tasks:
+            try:
+                self.runtime.cancel_running(task.id)
+            except Exception as exc:
+                self._show_error("종료", exc)
+                return
         shutdown = getattr(self.runtime, "shutdown", None)
         if callable(shutdown):
             shutdown()
-        QApplication.instance().quit()
+        self.refresh_timer.stop()
+        application = QApplication.instance()
+        if application is not None:
+            application.quit()
+
+    def _tasks_requiring_exit_warning(self) -> list[object]:
+        active_tasks = []
+        for task in self._list_tasks():
+            status = enum_value(getattr(task, "status", ""))
+            if status == TaskStatus.RUNNING.value:
+                active_tasks.append(task)
+                continue
+            if status != TaskStatus.RESERVED.value:
+                continue
+            try:
+                active = bool(self.runtime.is_active(task.id))
+            except (AttributeError, TypeError):
+                active = False
+            if active:
+                active_tasks.append(task)
+        return active_tasks
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802
         if self.tray is not None and self.tray.isVisible():
