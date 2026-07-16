@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from pydantic import ValidationError
 from PySide6.QtCore import QDateTime, Qt
+from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,8 +32,16 @@ from PySide6.QtWidgets import (
 )
 
 from ai_queue_runner.application.task_service import TaskDraft
+from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.enums import AgentPolicy, ApprovalMode
 from ai_queue_runner.ui.task_table import enum_value
+
+EMPTY_ROOTS_MESSAGE = "설정에서 허용 프로젝트 루트를 먼저 추가하세요."
+OUTSIDE_ROOTS_MESSAGE = "선택한 폴더는 허용된 프로젝트 루트 밖에 있습니다."
+STALE_PATH_MESSAGE = (
+    "기존 프로젝트 경로가 현재 허용 루트 밖에 있습니다. 새 경로를 선택하세요."
+)
+INVALID_ROOT_MESSAGE = "선택한 허용 프로젝트 루트가 존재하지 않습니다. 설정을 확인하세요."
 
 
 def _utc_naive_to_local(value: datetime) -> datetime:
@@ -52,10 +62,13 @@ class TaskDialog(QDialog):
         available_tasks: Iterable[object] = (),
         parent: QWidget | None = None,
         *,
+        config: AppConfig,
         prompt_template_service: object | None = None,
     ) -> None:
         super().__init__(parent)
         self._task = task
+        self._config = config
+        self._selected_project_path: Path | None = None
         self._prompt_template_service = prompt_template_service
         self._templates_by_name: dict[str, object] = {}
         self._selected_template_name: str | None = None
@@ -89,15 +102,29 @@ class TaskDialog(QDialog):
         prompt_layout.addWidget(self.prompt_edit)
         self._refresh_templates()
 
-        self.path_edit = QLineEdit()
-        self.path_edit.setAccessibleName("프로젝트 경로")
-        browse_button = QPushButton("찾아보기…")
-        browse_button.clicked.connect(self._browse_path)
+        self.root_combo = QComboBox()
+        self.root_combo.setAccessibleName("허용 프로젝트 루트")
+        self.root_combo.setEditable(False)
+        self.subfolder_button = QPushButton("하위 폴더 선택…")
+        self.subfolder_button.clicked.connect(self._browse_path)
+        self.path_display = QLineEdit()
+        self.path_display.setAccessibleName("프로젝트 경로")
+        self.path_display.setReadOnly(True)
+        self.path_warning_label = QLabel()
+        self.path_warning_label.setWordWrap(True)
+        self.path_warning_label.setStyleSheet("color: #b42318;")
+        root_controls = QHBoxLayout()
+        root_controls.setContentsMargins(0, 0, 0, 0)
+        root_controls.addWidget(self.root_combo, 1)
+        root_controls.addWidget(self.subfolder_button)
         path_row = QWidget()
-        path_layout = QHBoxLayout(path_row)
+        path_layout = QVBoxLayout(path_row)
         path_layout.setContentsMargins(0, 0, 0, 0)
-        path_layout.addWidget(self.path_edit, 1)
-        path_layout.addWidget(browse_button)
+        path_layout.setSpacing(4)
+        path_layout.addLayout(root_controls)
+        path_layout.addWidget(self.path_display)
+        path_layout.addWidget(self.path_warning_label)
+        self.root_combo.currentIndexChanged.connect(self._root_selected)
 
         self.agent_combo = QComboBox()
         for label, policy in (
@@ -174,7 +201,13 @@ class TaskDialog(QDialog):
 
         if task is not None:
             self._load_task(task)
+        else:
+            self._refresh_project_roots()
         self.title_edit.setFocus()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        self._refresh_project_roots()
+        super().showEvent(event)
 
     def _refresh_templates(self, selected_name: str | None = None) -> None:
         enabled = self._prompt_template_service is not None
@@ -288,7 +321,7 @@ class TaskDialog(QDialog):
     def _load_task(self, task: object) -> None:
         self.title_edit.setText(str(getattr(task, "title", "")))
         self.prompt_edit.setPlainText(str(getattr(task, "prompt", "")))
-        self.path_edit.setText(str(getattr(task, "project_path", "")))
+        self._refresh_project_roots(str(getattr(task, "project_path", "")))
         self._select_data(self.agent_combo, enum_value(getattr(task, "agent_policy", "any")))
         self.priority_spin.setValue(int(getattr(task, "priority", 50)))
         self._select_data(
@@ -320,14 +353,126 @@ class TaskDialog(QDialog):
                 combo.setCurrentIndex(index)
                 return
 
+    def _configured_roots(self) -> list[Path]:
+        return [Path(root) for root in self._config.app.allowed_project_roots]
+
+    @staticmethod
+    def _resolve_existing_directory(value: Path | str) -> Path | None:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            return None
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            return None
+        return resolved if resolved.is_dir() else None
+
+    def _containing_root_index(self, candidate: Path) -> int | None:
+        for index, root in enumerate(self._configured_roots()):
+            resolved_root = self._resolve_existing_directory(root)
+            if resolved_root is not None and (
+                candidate == resolved_root or resolved_root in candidate.parents
+            ):
+                return index
+        return None
+
+    def _set_path_warning(self, message: str) -> None:
+        self.path_warning_label.setText(message)
+        self.path_warning_label.setVisible(bool(message))
+
+    def _update_path_controls(self, *, roots_available: bool) -> None:
+        self.root_combo.setEnabled(roots_available)
+        self.path_display.setEnabled(roots_available)
+        self.subfolder_button.setEnabled(
+            roots_available
+            and self.root_combo.currentIndex() >= 0
+            and self._selected_project_path is not None
+        )
+
+    def _refresh_project_roots(self, project_path: str | None = None) -> None:
+        roots = self._configured_roots()
+        displayed_path = self.path_display.text().strip() if project_path is None else project_path
+
+        self.root_combo.blockSignals(True)
+        self.root_combo.clear()
+        for root in roots:
+            self.root_combo.addItem(str(root), str(root))
+
+        if not roots:
+            self.root_combo.setCurrentIndex(-1)
+            self.root_combo.blockSignals(False)
+            self._selected_project_path = None
+            self.path_display.setText(displayed_path)
+            self._set_path_warning(EMPTY_ROOTS_MESSAGE)
+            self._update_path_controls(roots_available=False)
+            return
+
+        candidate = self._resolve_existing_directory(displayed_path) if displayed_path else None
+        containing_index = self._containing_root_index(candidate) if candidate is not None else None
+        if containing_index is not None:
+            self.root_combo.setCurrentIndex(containing_index)
+            self._selected_project_path = candidate
+            self.path_display.setText(str(candidate))
+            self._set_path_warning("")
+        elif displayed_path:
+            self.root_combo.setCurrentIndex(-1)
+            self._selected_project_path = None
+            self.path_display.setText(displayed_path)
+            self._set_path_warning(STALE_PATH_MESSAGE)
+        else:
+            self.root_combo.setCurrentIndex(0)
+            self._selected_project_path = None
+        self.root_combo.blockSignals(False)
+
+        if not displayed_path:
+            self._root_selected(0)
+        else:
+            self._update_path_controls(roots_available=True)
+
+    def _root_selected(self, index: int) -> None:
+        if index < 0:
+            self._selected_project_path = None
+            self._update_path_controls(roots_available=self.root_combo.count() > 0)
+            return
+        root = self._resolve_existing_directory(str(self.root_combo.itemData(index)))
+        if root is None:
+            self._selected_project_path = None
+            self.path_display.setText(str(self.root_combo.itemData(index)))
+            self._set_path_warning(INVALID_ROOT_MESSAGE)
+        else:
+            self._selected_project_path = root
+            self.path_display.setText(str(root))
+            self._set_path_warning("")
+        self._update_path_controls(roots_available=True)
+
     def _browse_path(self) -> None:
+        root_index = self.root_combo.currentIndex()
+        if root_index < 0:
+            return
+        selected_root = self._resolve_existing_directory(
+            str(self.root_combo.itemData(root_index))
+        )
+        if selected_root is None:
+            return
         selected = QFileDialog.getExistingDirectory(
             self,
-            "프로젝트 폴더 선택",
-            self.path_edit.text(),
+            "하위 폴더 선택",
+            str(selected_root),
         )
-        if selected:
-            self.path_edit.setText(selected)
+        if not selected:
+            return
+        candidate = self._resolve_existing_directory(selected)
+        containing_index = self._containing_root_index(candidate) if candidate is not None else None
+        if candidate is None or containing_index is None:
+            QMessageBox.warning(self, "프로젝트 경로 확인", OUTSIDE_ROOTS_MESSAGE)
+            return
+        self.root_combo.blockSignals(True)
+        self.root_combo.setCurrentIndex(containing_index)
+        self.root_combo.blockSignals(False)
+        self._selected_project_path = candidate
+        self.path_display.setText(str(candidate))
+        self._set_path_warning("")
+        self._update_path_controls(roots_available=True)
 
     def selected_dependency_ids(self) -> list[int]:
         return [
@@ -339,13 +484,20 @@ class TaskDialog(QDialog):
     def build_draft(self) -> TaskDraft:
         title = self.title_edit.text().strip()
         prompt = self.prompt_edit.toPlainText().strip()
-        project_path = self.path_edit.text().strip()
+        if not self._configured_roots():
+            raise ValueError(EMPTY_ROOTS_MESSAGE)
+        project_path = (
+            self._resolve_existing_directory(self._selected_project_path)
+            if self._selected_project_path is not None
+            else None
+        )
+        if project_path is None or self._containing_root_index(project_path) is None:
+            raise ValueError("프로젝트 경로를 허용 루트 안에서 다시 선택하세요.")
         missing = [
             label
             for label, value in (
                 ("제목", title),
                 ("프롬프트", prompt),
-                ("프로젝트 경로", project_path),
             )
             if not value
         ]
@@ -359,7 +511,7 @@ class TaskDialog(QDialog):
         return TaskDraft(
             title=title,
             prompt=prompt,
-            project_path=project_path,
+            project_path=str(project_path),
             agent_policy=self.agent_combo.currentData(),
             priority=self.priority_spin.value(),
             approval_mode=self.approval_combo.currentData(),
