@@ -24,6 +24,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Local task queue scheduler for Claude and Codex CLIs",
     )
     parser.add_argument("--config", type=Path, default=None, help="path to config.toml")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print subcommand output as machine-readable JSON",
+    )
     parser.add_argument("--version", action="store_true", help="print version and exit")
     maintenance = parser.add_mutually_exclusive_group()
     maintenance.add_argument(
@@ -49,6 +54,61 @@ def main(argv: list[str] | None = None) -> int:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--no-tray", action="store_true", help=argparse.SUPPRESS)
+    subcommands = parser.add_subparsers(dest="command")
+    add_task = subcommands.add_parser("add-task", help="add a task without starting the GUI")
+    add_task.add_argument("--title", required=True, help="task title")
+    add_task.add_argument("--prompt", required=True, help="prompt sent to the selected AI")
+    add_task.add_argument("--project", type=Path, required=True, help="absolute project path")
+    add_task.add_argument("--agent", choices=("claude", "codex", "any"), default="any")
+    add_task.add_argument("--priority", type=int, default=50, metavar="0-100")
+    add_task.add_argument("--approval", choices=("auto", "confirm"), default="confirm")
+    add_task.add_argument(
+        "--not-before",
+        metavar="YYYY-MM-DD HH:MM",
+        help="local time; stored internally as UTC",
+    )
+    add_task.add_argument("--max-retries", type=int, default=2, metavar="N")
+    add_task.add_argument(
+        "--tag",
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="TAG",
+    )
+    add_task.add_argument(
+        "--depends-on",
+        action="extend",
+        nargs="+",
+        type=int,
+        default=[],
+        metavar="ID",
+    )
+    _add_subcommand_json_option(add_task)
+
+    list_tasks = subcommands.add_parser("list-tasks", help="list queue tasks")
+    list_tasks.add_argument(
+        "--status",
+        choices=(
+            "waiting",
+            "reserved",
+            "running",
+            "succeeded",
+            "failed",
+            "retry_wait",
+            "blocked",
+            "cancelled",
+            "archived",
+        ),
+    )
+    _add_subcommand_json_option(list_tasks)
+
+    show_task = subcommands.add_parser("show-task", help="show one task and recent runs")
+    show_task.add_argument("task_id", type=int, metavar="ID")
+    _add_subcommand_json_option(show_task)
+
+    cancel_task = subcommands.add_parser("cancel-task", help="cancel a queued task")
+    cancel_task.add_argument("task_id", type=int, metavar="ID")
+    _add_subcommand_json_option(cancel_task)
     args = parser.parse_args(argv)
 
     if args.version:
@@ -74,6 +134,20 @@ def main(argv: list[str] | None = None) -> int:
         print(maintenance_result)
         return 0
 
+    if args.command is not None:
+        from ai_queue_runner.application.cli_service import CliUsageError, run_cli_command
+
+        try:
+            output = run_cli_command(args, config)
+        except CliUsageError as exc:
+            print(f"요청을 처리할 수 없습니다: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:  # CLI boundary: never expose tracebacks to callers.
+            print(f"예기치 않은 오류가 발생했습니다: {exc}", file=sys.stderr)
+            return 3
+        print(output)
+        return 0
+
     setup_logging(config.app.logs_dir, config.app.log_level)
     logger.info("AI Queue Runner %s starting", __version__)
     logger.info(
@@ -95,6 +169,15 @@ def _select_active_config_path(explicit_path: Path | None) -> Path:
         return explicit_path
     cwd_path = Path.cwd() / "config.toml"
     return cwd_path if cwd_path.exists() else default_app_data_dir() / "config.toml"
+
+
+def _add_subcommand_json_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="print this command's output as machine-readable JSON",
+    )
 
 
 def _run_maintenance(args: argparse.Namespace, config: AppConfig) -> str | None:

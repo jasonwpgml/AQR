@@ -25,3 +25,5 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T020 prompt templates (settings-backed, task dialog integration)
 [done] T021 exit warning, task deletion, CLI path resolution, retry_wait visibility
 [done] T022 task dialog restricts project path to allowed roots
+[done] T023 calendar view with scheduled-date task creation
+[done] T024 headless CLI add/list/show/cancel subcommands

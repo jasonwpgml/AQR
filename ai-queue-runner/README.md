@@ -50,6 +50,32 @@ allowed_project_roots = ["C:/Users/me/projects"]
 
 프롬프트는 명령행 인자가 아니라 표준 입력으로 전달됩니다. Claude는 `permission-mode auto`, Codex는 `workspace-write` 샌드박스와 승인 비활성 모드에서 실행하며 위험한 우회 플래그는 사용하지 않습니다.
 
+## AI/CLI 연동
+
+GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 작업을 추가·조회·취소할 수 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
+
+```powershell
+# AI 도우미가 특정 프로젝트의 작업을 등록
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml add-task `
+  --title "회귀 테스트 추가" --prompt "변경된 예약 흐름의 회귀 테스트를 추가하세요." `
+  --project "C:\projects\sample" --agent codex --priority 80 --approval confirm
+
+# 선택한 날짜의 오전 9시(로컬 시간) 이후 실행하도록 예약
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml add-task `
+  --title "월요일 문서 점검" --prompt "README와 실제 명령을 대조하세요." `
+  --project "C:\projects\sample" --not-before "2026-07-20 09:00" --tag docs
+
+# 조회, 상세 확인, 취소
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml list-tasks --status waiting
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml show-task 1
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml cancel-task 1
+
+# 기계 판독 가능한 출력(열거형은 문자열, 시각은 UTC ISO-8601)
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml --json list-tasks
+```
+
+`--not-before "YYYY-MM-DD HH:MM"`은 실행하는 PC의 로컬 시간으로 해석해 DB에는 UTC로 저장합니다. `--json`은 각 하위 명령 뒤에도 지정할 수 있습니다.
+
 ## 유지보수 명령
 
 아래 명령은 GUI를 시작하지 않고 작업을 완료한 뒤 종료합니다.
