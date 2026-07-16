@@ -69,6 +69,12 @@ def make_task(task_id: int = 1, **overrides):
     return SimpleNamespace(**values)
 
 
+def make_config_with_roots(*roots: Path) -> AppConfig:
+    config = AppConfig()
+    config.app.allowed_project_roots[:] = roots
+    return config
+
+
 def test_task_table_model_exposes_compact_korean_projection(app):
     model = TaskTableModel([make_task()])
 
@@ -99,23 +105,173 @@ def test_retry_wait_row_shows_local_retry_time_and_error_tooltip(app):
     )
 
 
-def test_task_dialog_validates_and_builds_draft_with_dependencies(app):
+def test_task_dialog_validates_and_builds_draft_with_dependencies(app, tmp_path):
     dependency = make_task(2, title="스키마 작성")
-    dialog = TaskDialog(available_tasks=[dependency])
+    project = tmp_path / "sample"
+    project.mkdir()
+    dialog = TaskDialog(
+        available_tasks=[dependency],
+        config=make_config_with_roots(project),
+    )
 
     with pytest.raises(ValueError, match="필수 입력"):
         dialog.build_draft()
 
     dialog.title_edit.setText("UI 연결")
     dialog.prompt_edit.setPlainText("작업 목록을 연결한다.")
-    dialog.path_edit.setText("C:/work/sample")
     dialog.dependencies_list.item(0).setCheckState(Qt.CheckState.Checked)
     draft = dialog.build_draft()
 
     assert draft.title == "UI 연결"
+    assert draft.project_path == project.resolve()
     assert draft.agent_policy is AgentPolicy.ANY
     assert draft.approval_mode is ApprovalMode.CONFIRM
     assert draft.dependency_ids == [2]
+
+
+def test_task_dialog_lists_live_configured_roots_on_open(app, tmp_path):
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    config = make_config_with_roots(first_root)
+    dialog = TaskDialog(config=config)
+    config.app.allowed_project_roots[:] = [second_root, first_root]
+
+    dialog.show()
+    app.processEvents()
+
+    assert [dialog.root_combo.itemText(index) for index in range(dialog.root_combo.count())] == [
+        str(second_root),
+        str(first_root),
+    ]
+    dialog.close()
+
+
+def test_task_dialog_accepts_and_shows_subfolder_inside_allowed_root(
+    app, tmp_path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    project = root / "project"
+    project.mkdir(parents=True)
+    dialog = TaskDialog(config=make_config_with_roots(root))
+    browse_starts = []
+
+    def choose_subfolder(*args):
+        browse_starts.append(args[2])
+        return str(project)
+
+    monkeypatch.setattr(
+        "ai_queue_runner.ui.task_dialog.QFileDialog.getExistingDirectory",
+        choose_subfolder,
+    )
+
+    dialog.subfolder_button.click()
+
+    assert browse_starts == [str(root.resolve())]
+    assert dialog.path_display.text() == str(project.resolve())
+
+
+def test_task_dialog_rejects_folder_outside_roots_and_keeps_previous_path(
+    app, tmp_path, monkeypatch
+):
+    root = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    dialog = TaskDialog(config=make_config_with_roots(root))
+    previous_path = dialog.path_display.text()
+    warnings = []
+    monkeypatch.setattr(
+        "ai_queue_runner.ui.task_dialog.QFileDialog.getExistingDirectory",
+        lambda *_args: str(outside),
+    )
+    monkeypatch.setattr(
+        "ai_queue_runner.ui.task_dialog.QMessageBox.warning",
+        lambda *_args: warnings.append(_args[2]),
+    )
+
+    dialog.subfolder_button.click()
+
+    assert warnings == ["선택한 폴더는 허용된 프로젝트 루트 밖에 있습니다."]
+    assert dialog.path_display.text() == previous_path
+
+
+def test_task_dialog_empty_roots_disable_path_row_and_block_accept(app, monkeypatch):
+    dialog = TaskDialog(config=AppConfig())
+    dialog.title_edit.setText("차단 확인")
+    dialog.prompt_edit.setPlainText("허용 루트가 없으면 저장하지 않는다.")
+    warnings = []
+    monkeypatch.setattr(
+        "ai_queue_runner.ui.task_dialog.QMessageBox.warning",
+        lambda *_args: warnings.append(_args[2]),
+    )
+
+    assert dialog.root_combo.isEnabled() is False
+    assert dialog.subfolder_button.isEnabled() is False
+    assert dialog.path_display.isEnabled() is False
+    assert dialog.path_warning_label.text() == "설정에서 허용 프로젝트 루트를 먼저 추가하세요."
+    with pytest.raises(ValueError, match="허용 프로젝트 루트"):
+        dialog.build_draft()
+
+    dialog.accept()
+
+    assert dialog.result() == 0
+    assert warnings == ["설정에서 허용 프로젝트 루트를 먼저 추가하세요."]
+
+
+def test_task_dialog_edit_mode_selects_containing_root_and_existing_path(app, tmp_path):
+    first_root = tmp_path / "first"
+    containing_root = tmp_path / "workspace"
+    project = containing_root / "project"
+    first_root.mkdir()
+    project.mkdir(parents=True)
+    task = make_task(project_path=str(project))
+
+    dialog = TaskDialog(
+        task,
+        config=make_config_with_roots(first_root, containing_root),
+    )
+
+    assert dialog.root_combo.currentText() == str(containing_root)
+    assert dialog.path_display.text() == str(project.resolve())
+
+
+def test_task_dialog_root_switch_resets_effective_path(app, tmp_path):
+    first_root = tmp_path / "first"
+    project = first_root / "project"
+    second_root = tmp_path / "second"
+    project.mkdir(parents=True)
+    second_root.mkdir()
+    dialog = TaskDialog(
+        make_task(project_path=str(project)),
+        config=make_config_with_roots(first_root, second_root),
+    )
+
+    dialog.root_combo.setCurrentIndex(1)
+
+    assert dialog.path_display.text() == str(second_root.resolve())
+
+
+def test_task_dialog_stale_edit_path_requires_root_reselection(app, tmp_path):
+    root = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    dialog = TaskDialog(
+        make_task(project_path=str(outside)),
+        config=make_config_with_roots(root),
+    )
+
+    assert dialog.root_combo.currentIndex() == -1
+    assert dialog.path_display.text() == str(outside)
+    assert "현재 허용 루트 밖" in dialog.path_warning_label.text()
+    with pytest.raises(ValueError, match="다시 선택"):
+        dialog.build_draft()
+
+    dialog.root_combo.setCurrentIndex(0)
+
+    assert dialog.build_draft().project_path == root.resolve()
 
 
 def test_task_dialog_saves_selects_and_deletes_prompt_templates(app, tmp_path, monkeypatch):
@@ -124,7 +280,10 @@ def test_task_dialog_saves_selects_and_deletes_prompt_templates(app, tmp_path, m
     service = PromptTemplateService(make_session_factory(engine))
     service.save("Existing", "Original prompt")
     service.save("Other", "Other prompt")
-    dialog = TaskDialog(prompt_template_service=service)
+    dialog = TaskDialog(
+        config=make_config_with_roots(tmp_path),
+        prompt_template_service=service,
+    )
 
     existing_index = dialog.template_combo.findData("Existing")
     dialog.template_combo.setCurrentIndex(existing_index)

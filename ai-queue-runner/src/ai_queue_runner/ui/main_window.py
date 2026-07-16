@@ -461,6 +461,7 @@ class MainWindow(QMainWindow):
         dialog = TaskDialog(
             available_tasks=self._list_tasks(),
             parent=self,
+            config=self.config,
             prompt_template_service=self.prompt_template_service,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -480,6 +481,7 @@ class MainWindow(QMainWindow):
             self._selected_task,
             available_tasks=self._list_tasks(),
             parent=self,
+            config=self.config,
             prompt_template_service=self.prompt_template_service,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
