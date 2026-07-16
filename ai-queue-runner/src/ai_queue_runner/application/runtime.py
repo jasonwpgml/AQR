@@ -181,7 +181,10 @@ class QueueRuntime:
                     return True
         raise ValueError("no compatible available agent can reserve this task")
 
-    def reject(self, task_id: int) -> bool:
+    def reject(self, task_id: int, *, block: bool = False) -> bool:
+        # AIDEV-NOTE: block=True parks the task in BLOCKED so the scheduler cannot
+        # immediately re-reserve it and re-prompt the user; plain reject (block=False)
+        # returns it to WAITING for callers that will cancel or re-queue it themselves.
         if self.is_active(task_id):
             raise ValueError("an active task cannot be rejected")
         with self._session_factory() as session:
@@ -192,7 +195,9 @@ class QueueRuntime:
             if task.status is not TaskStatus.RESERVED:
                 raise ValueError("only reserved tasks can be rejected")
             assigned_agent = task.assigned_agent
-            repo.set_status(task, TaskStatus.WAITING)
+            repo.set_status(task, TaskStatus.BLOCKED if block else TaskStatus.WAITING)
+            if block:
+                task.last_error = "사용자가 실행을 거부했습니다. 재시도 또는 취소를 선택하세요."
             task.assigned_agent = None
             task.reserved_at = None
             if assigned_agent is not None:

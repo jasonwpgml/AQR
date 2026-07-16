@@ -398,6 +398,11 @@ class FakeTaskService:
     def delete(self, task_id):
         self.tasks = [task for task in self.tasks if task.id != task_id]
 
+    def cancel(self, task_id):
+        task = self.get(task_id)
+        task.status = TaskStatus.CANCELLED
+        return task
+
 
 class FakeAgentService:
     def __init__(self):
@@ -422,6 +427,8 @@ class FakeRuntime:
 
     def __init__(self):
         self.reserved_now = []
+        self.approved = []
+        self.rejected = []
         self.cancelled = []
         self.shutdown_calls = 0
 
@@ -437,6 +444,14 @@ class FakeRuntime:
 
     def reserve_now(self, task_id):
         self.reserved_now.append(task_id)
+        return True
+
+    def approve(self, task_id):
+        self.approved.append(task_id)
+        return True
+
+    def reject(self, task_id, *, block=False):
+        self.rejected.append((task_id, block))
         return True
 
     def cancel_running(self, task_id):
@@ -704,6 +719,112 @@ def test_main_window_polls_each_pending_reservation_once(app, approval_mode):
     window._poll_runtime()
 
     assert prompted == [task.id]
+    window.close()
+
+
+def test_run_now_confirm_task_is_not_reprompted_by_poll(app):
+    task = make_task()
+    runtime = FakeRuntime()
+    window = MainWindow(
+        FakeTaskService([task]),
+        FakeAgentService(),
+        runtime,
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+    window.task_table.selectRow(0)
+    app.processEvents()
+    prompted = []
+    window.request_approval = lambda task_id: prompted.append(task_id) or True
+
+    window.run_now_task()
+    task.status = TaskStatus.RESERVED
+    window._poll_runtime()
+    window._poll_runtime()
+
+    assert runtime.reserved_now == [task.id]
+    assert prompted == [task.id]
+    window.close()
+
+
+def test_run_now_auto_task_executes_without_approval_dialog(app):
+    task = make_task(approval_mode=ApprovalMode.AUTO)
+    runtime = FakeRuntime()
+    window = MainWindow(
+        FakeTaskService([task]),
+        FakeAgentService(),
+        runtime,
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+    window.task_table.selectRow(0)
+    app.processEvents()
+    window.request_approval = lambda task_id: pytest.fail("auto 작업에는 승인 창이 없어야 합니다")
+
+    window.run_now_task()
+
+    assert runtime.reserved_now == [task.id]
+    assert runtime.approved == [task.id]
+    window.close()
+
+
+def test_poll_does_not_stack_prompt_while_approval_dialog_open(app):
+    task = make_task(
+        status=TaskStatus.RESERVED,
+        approval_mode=ApprovalMode.CONFIRM,
+        assigned_agent=AgentName.CODEX,
+    )
+    window = MainWindow(
+        FakeTaskService([task]),
+        FakeAgentService(),
+        FakeRuntime(),
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+    prompted = []
+    window.request_approval = lambda task_id: prompted.append(task_id) or True
+    window._approval_dialog_open = True
+
+    window._poll_runtime()
+
+    assert prompted == []
+    window.close()
+
+
+def test_cancel_reserved_task_rejects_reservation_then_cancels(app, monkeypatch):
+    task = make_task(status=TaskStatus.RESERVED, assigned_agent=AgentName.CODEX)
+    runtime = FakeRuntime()
+    service = FakeTaskService([task])
+    window = MainWindow(
+        service,
+        FakeAgentService(),
+        runtime,
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+    window.task_table.selectRow(0)
+    app.processEvents()
+    monkeypatch.setattr(
+        "ai_queue_runner.ui.main_window.QMessageBox.question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+
+    window.cancel_task()
+
+    assert runtime.rejected == [(task.id, False)]
+    assert task.status is TaskStatus.CANCELLED
     window.close()
 
 
