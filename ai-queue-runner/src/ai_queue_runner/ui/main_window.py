@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QItemSelection, Qt, QTimer, QUrl
@@ -25,10 +26,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.enums import AgentName, AgentStatus, TaskStatus
 from ai_queue_runner.ui.agent_status_widget import AgentStatusWidget
 from ai_queue_runner.ui.approval_dialog import ApprovalDialog
 from ai_queue_runner.ui.log_viewer import LogViewer
+from ai_queue_runner.ui.settings_dialog import SettingsDialog
 from ai_queue_runner.ui.task_dialog import TaskDialog
 from ai_queue_runner.ui.task_table import TaskColumn, TaskTableModel, enum_value
 from ai_queue_runner.ui.tray import QueueSystemTray
@@ -45,6 +48,8 @@ class MainWindow(QMainWindow):
         adapters: Mapping[object, object],
         parent: QWidget | None = None,
         *,
+        config: AppConfig,
+        active_config_path: Path,
         create_tray: bool = True,
     ) -> None:
         super().__init__(parent)
@@ -52,6 +57,8 @@ class MainWindow(QMainWindow):
         self.agent_service = agent_service
         self.runtime = runtime
         self.adapters = adapters
+        self.config = config
+        self.active_config_path = active_config_path
         self._selected_task: object | None = None
         self._prompted_reservations: set[int] = set()
 
@@ -67,6 +74,7 @@ class MainWindow(QMainWindow):
 
         self.start_button = QPushButton("스케줄러 시작")
         self.pause_button = QPushButton("일시정지")
+        self.settings_button = QPushButton("설정")
         self.add_button = QPushButton("작업 추가")
         self.edit_button = QPushButton("수정")
         self.duplicate_button = QPushButton("복제")
@@ -82,6 +90,7 @@ class MainWindow(QMainWindow):
 
         self.start_button.clicked.connect(self.start_scheduler)
         self.pause_button.clicked.connect(self.pause_scheduler)
+        self.settings_button.clicked.connect(self.open_settings)
         self.add_button.clicked.connect(self.add_task)
         self.edit_button.clicked.connect(self.edit_task)
         self.duplicate_button.clicked.connect(self.duplicate_task)
@@ -167,6 +176,7 @@ class MainWindow(QMainWindow):
         for widget in (
             self.start_button,
             self.pause_button,
+            self.settings_button,
         ):
             scheduler_controls.addWidget(widget)
         scheduler_controls.addStretch(1)
@@ -416,6 +426,11 @@ class MainWindow(QMainWindow):
             return
         self._notify("스케줄러를 일시정지했습니다.")
         self.refresh()
+
+    def open_settings(self) -> None:
+        dialog = SettingsDialog(self.config, self.active_config_path, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.statusBar().showMessage(f"설정을 저장했습니다: {self.active_config_path}", 5000)
 
     def add_task(self) -> None:
         dialog = TaskDialog(available_tasks=self._list_tasks(), parent=self)

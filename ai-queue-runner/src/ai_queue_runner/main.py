@@ -55,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"AI Queue Runner {__version__}")
         return 0
 
+    active_config_path = _select_active_config_path(args.config)
     try:
         config = load_config(args.config)
     except ConfigError as exc:
@@ -77,11 +78,20 @@ def main(argv: list[str] | None = None) -> int:
         config.app.global_auto_run,
         ",".join(config.agents),
     )
-    return run_desktop_app(
-        config,
-        smoke_test=args.smoke_test,
-        create_tray=not args.no_tray,
-    )
+    desktop_options = {
+        "smoke_test": args.smoke_test,
+        "create_tray": not args.no_tray,
+    }
+    if args.config is not None or active_config_path == Path.cwd() / "config.toml":
+        desktop_options["active_config_path"] = active_config_path
+    return run_desktop_app(config, **desktop_options)
+
+
+def _select_active_config_path(explicit_path: Path | None) -> Path:
+    if explicit_path is not None:
+        return explicit_path
+    cwd_path = Path.cwd() / "config.toml"
+    return cwd_path if cwd_path.exists() else default_app_data_dir() / "config.toml"
 
 
 def _run_maintenance(args: argparse.Namespace, config: AppConfig) -> str | None:
@@ -113,6 +123,7 @@ def _run_maintenance(args: argparse.Namespace, config: AppConfig) -> str | None:
 def run_desktop_app(
     config: AppConfig,
     *,
+    active_config_path: Path | None = None,
     smoke_test: bool = False,
     create_tray: bool = True,
 ) -> int:
@@ -129,6 +140,9 @@ def run_desktop_app(
         make_session_factory,
     )
     from ai_queue_runner.ui.main_window import MainWindow
+
+    if active_config_path is None:
+        active_config_path = _select_active_config_path(None)
 
     engine = create_db_engine(config.app.db_path)
     init_db(engine)
@@ -151,6 +165,8 @@ def run_desktop_app(
         agent_service,
         runtime,
         adapters,
+        config=config,
+        active_config_path=active_config_path,
         create_tray=tray_available,
     )
     _offer_startup_recovery(window, session_factory)

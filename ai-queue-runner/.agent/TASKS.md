@@ -20,3 +20,4 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T015 Phase 5: log viewer, tray controls, notifications
 [done] T016 Phase 6: stabilization, backup/export/startup, package, soak, and completion audit
 [done] T017 UX: human-readable log rendering + result summaries
+[done] T018 UX: allowed-roots settings dialog with live apply
