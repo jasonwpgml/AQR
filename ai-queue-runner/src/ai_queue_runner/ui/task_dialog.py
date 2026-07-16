@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -43,16 +44,21 @@ def _local_to_utc_naive(value: datetime) -> datetime:
 
 
 class TaskDialog(QDialog):
-    """Collect a validated ``TaskDraft`` without touching the database."""
+    """Collect a validated ``TaskDraft`` and manage independent prompt templates."""
 
     def __init__(
         self,
         task: object | None = None,
         available_tasks: Iterable[object] = (),
         parent: QWidget | None = None,
+        *,
+        prompt_template_service: object | None = None,
     ) -> None:
         super().__init__(parent)
         self._task = task
+        self._prompt_template_service = prompt_template_service
+        self._templates_by_name: dict[str, object] = {}
+        self._selected_template_name: str | None = None
         self.setWindowTitle("작업 수정" if task is not None else "작업 추가")
         self.setMinimumSize(620, 650)
 
@@ -61,6 +67,27 @@ class TaskDialog(QDialog):
         self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setAccessibleName("작업 프롬프트")
         self.prompt_edit.setPlaceholderText("AI에게 맡길 작업을 구체적으로 입력하세요.")
+
+        self.template_combo = QComboBox()
+        self.template_combo.setAccessibleName("프롬프트 템플릿")
+        self.save_template_button = QPushButton("템플릿으로 저장")
+        self.delete_template_button = QPushButton("삭제")
+        self.delete_template_button.setMaximumWidth(60)
+        self.template_combo.currentIndexChanged.connect(self._template_selected)
+        self.save_template_button.clicked.connect(self._save_prompt_template)
+        self.delete_template_button.clicked.connect(self._delete_prompt_template)
+        template_controls = QHBoxLayout()
+        template_controls.setContentsMargins(0, 0, 0, 0)
+        template_controls.addWidget(self.template_combo, 1)
+        template_controls.addWidget(self.save_template_button)
+        template_controls.addWidget(self.delete_template_button)
+        prompt_row = QWidget()
+        prompt_layout = QVBoxLayout(prompt_row)
+        prompt_layout.setContentsMargins(0, 0, 0, 0)
+        prompt_layout.setSpacing(4)
+        prompt_layout.addLayout(template_controls)
+        prompt_layout.addWidget(self.prompt_edit)
+        self._refresh_templates()
 
         self.path_edit = QLineEdit()
         self.path_edit.setAccessibleName("프로젝트 경로")
@@ -119,7 +146,7 @@ class TaskDialog(QDialog):
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         form.addRow("제목 *", self.title_edit)
-        form.addRow("프롬프트 *", self.prompt_edit)
+        form.addRow("프롬프트 *", prompt_row)
         form.addRow("프로젝트 경로 *", path_row)
         form.addRow("담당 AI", self.agent_combo)
         form.addRow("우선순위", self.priority_spin)
@@ -148,6 +175,101 @@ class TaskDialog(QDialog):
         if task is not None:
             self._load_task(task)
         self.title_edit.setFocus()
+
+    def _refresh_templates(self, selected_name: str | None = None) -> None:
+        enabled = self._prompt_template_service is not None
+        templates: list[object] = []
+        if enabled:
+            try:
+                templates = list(self._prompt_template_service.list())
+            except Exception as exc:
+                QMessageBox.warning(self, "템플릿 불러오기 실패", str(exc))
+                enabled = False
+
+        self._templates_by_name = {str(template.name): template for template in templates}
+        target_name = selected_name or self._selected_template_name
+        self.template_combo.blockSignals(True)
+        self.template_combo.clear()
+        self.template_combo.addItem("템플릿 선택…", None)
+        for template in templates:
+            name = str(template.name)
+            self.template_combo.addItem(name, name)
+        target_index = self.template_combo.findData(target_name)
+        self.template_combo.setCurrentIndex(max(0, target_index))
+        self.template_combo.blockSignals(False)
+
+        self._selected_template_name = target_name if target_index >= 0 else None
+        self.template_combo.setEnabled(enabled)
+        self.save_template_button.setEnabled(enabled)
+        self.delete_template_button.setEnabled(enabled and self._selected_template_name is not None)
+
+    def _template_selected(self, _index: int) -> None:
+        selected_name = self.template_combo.currentData()
+        if selected_name is None:
+            self._selected_template_name = None
+            self.delete_template_button.setEnabled(False)
+            return
+        template = self._templates_by_name[str(selected_name)]
+        template_prompt = str(template.prompt)
+        current_prompt = self.prompt_edit.toPlainText()
+        if current_prompt.strip() and current_prompt != template_prompt:
+            answer = QMessageBox.question(
+                self,
+                "프롬프트 바꾸기",
+                "현재 프롬프트를 선택한 템플릿 내용으로 바꾸시겠습니까?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._restore_template_selection()
+                return
+        self.prompt_edit.setPlainText(template_prompt)
+        self._selected_template_name = str(selected_name)
+        self.delete_template_button.setEnabled(True)
+
+    def _restore_template_selection(self) -> None:
+        index = self.template_combo.findData(self._selected_template_name)
+        self.template_combo.blockSignals(True)
+        self.template_combo.setCurrentIndex(max(0, index))
+        self.template_combo.blockSignals(False)
+
+    def _save_prompt_template(self) -> None:
+        if self._prompt_template_service is None:
+            return
+        name, accepted = QInputDialog.getText(
+            self,
+            "프롬프트 템플릿 저장",
+            "템플릿 이름:",
+            QLineEdit.EchoMode.Normal,
+            self._selected_template_name or "",
+        )
+        if not accepted:
+            return
+        try:
+            saved = self._prompt_template_service.save(name, self.prompt_edit.toPlainText())
+        except Exception as exc:
+            QMessageBox.warning(self, "템플릿 저장 실패", str(exc))
+            return
+        self._refresh_templates(str(saved.name))
+
+    def _delete_prompt_template(self) -> None:
+        if self._prompt_template_service is None or self._selected_template_name is None:
+            return
+        name = self._selected_template_name
+        if (
+            QMessageBox.question(
+                self,
+                "프롬프트 템플릿 삭제",
+                f"'{name}' 템플릿을 삭제하시겠습니까?",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            self._prompt_template_service.delete(name)
+        except Exception as exc:
+            QMessageBox.warning(self, "템플릿 삭제 실패", str(exc))
+            return
+        self._selected_template_name = None
+        self._refresh_templates()
 
     def _populate_dependencies(self, available_tasks: Iterable[object]) -> None:
         current_id = getattr(self._task, "id", None)
