@@ -163,6 +163,7 @@ UPDATE는 경쟁 시 한쪽만 성공하므로 같은 `any` 작업이 두 AI에 
 | `domain/clock.py` | UTC 시간 헬퍼 (테스트에서 시간 조작용) | ✅ Phase 1 |
 | `domain/scoring.py` | 우선순위·대기·재시도·의존성 기반 점수 계산 | ✅ Phase 2 |
 | `infrastructure/database.py` | 엔진 생성, FK/WAL PRAGMA, 스키마 버전 | ✅ Phase 1 |
+| `infrastructure/process_runner.py` | 서브프로세스 실행 (로그 스트리밍·타임아웃·취소) | ✅ Phase 3 |
 | `infrastructure/repositories.py` | CRUD 창구 — 상태 변경은 `set_status()`만 사용 | ✅ Phase 1 |
 | `config/defaults.py` | 모든 튜닝값 (점수 가중치, 제한 패턴) | ✅ Phase 0 |
 | `config/loader.py` | TOML 로드 + 검증 | ✅ Phase 0 |
