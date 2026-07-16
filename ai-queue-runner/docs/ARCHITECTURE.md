@@ -1,56 +1,63 @@
-# 아키텍처 도식
+# 아키텍처 개요
 
-사람이 코드 전체를 읽지 않고 구조를 파악하기 위한 문서입니다.
-테이블·상태·모듈이 바뀌면 같은 작업 안에서 이 문서의 도식도 갱신합니다(AGENTS.md 규칙).
+이 문서는 AI Queue Runner v0.1의 구현 구조와 핵심 불변식을 설명합니다. 테이블·상태·모듈 경계가 바뀌면 같은 변경에서 이 문서도 갱신합니다.
 
-> 도식은 Mermaid로 작성되어 GitHub/VS Code 미리보기에서 그림으로 렌더링됩니다.
-
-## 1. 전체 구조 (계층)
+## 1. 계층과 실행 흐름
 
 ```mermaid
 flowchart TB
-    subgraph UI["ui/ — PySide6 (Phase 5)"]
-        MW[메인 창 / 트레이 / 승인 다이얼로그]
+    subgraph UI["ui/ · PySide6"]
+        MW[메인 창·작업 표·상세]
+        DLG[작업/승인 대화상자]
+        TRAY[시스템 트레이·알림]
     end
 
-    subgraph APP["application/ — 서비스 (Phase 2~3)"]
-        SCHED[scheduler_service.py<br/>후보 필터 → 점수 → 원자적 선점]
-        EXEC[execution_service.py<br/>실행·6가지 결과 처리<br/>성공·재시도·제한·타임아웃·취소]
-        RECOV[recovery_service.py<br/>예약 타임아웃 해제 · 재시도 승격<br/>PID 크래시 복구는 T009b]
+    subgraph APP["application/ · 유스케이스"]
+        TASK[TaskService\nCRUD·맨 위·보관]
+        AGENT[AgentService]
+        RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
+        SCHED[SchedulerService\n후보·점수·원자적 예약]
+        EXEC[ExecutionService\n실행 결과·재시도·제한 처리]
+        RECOV[RecoveryService\n예약/PID/재시도 복구]
     end
 
-    subgraph DOMAIN["domain/ — 모델·순수 규칙 (구현됨)"]
-        ENUMS[enums.py<br/>상태·정책 정의]
-        TRANS[transitions.py<br/>상태 전이 규칙]
-        SCORE[scoring.py<br/>설정 기반 점수 계산]
-        MODELS[models.py<br/>ORM 테이블 5개]
-        CLOCK[clock.py<br/>UTC 시간]
+    subgraph DOMAIN["domain/ · 규칙"]
+        ENUM[상태·정책 enum]
+        TRANS[상태 전이]
+        SCORE[점수 계산]
+        MODEL[SQLAlchemy 모델]
     end
 
-    subgraph INFRA["infrastructure/ — 외부 연동"]
-        DB[(database.py<br/>SQLite + WAL)]
-        REPO[repositories.py<br/>CRUD 창구]
-        ADAPT[adapters/<br/>claude · codex CLI<br/>Phase 4]
+    subgraph INFRA["infrastructure/ · 외부 경계"]
+        REPO[Repository]
+        DB[(SQLite WAL)]
+        PROC[ProcessRunner\nstdin·로그·프로세스 트리]
+        ADAPTER[Claude/Codex Adapter]
+        POLICY[허용 경로 정책]
+        OPS[백업·Windows 시작 프로그램]
     end
 
-    CFG[config/<br/>TOML 설정<br/>점수 가중치 · 제한 패턴]
-
-    MW --> SCHED
-    SCHED --> EXEC --> ADAPT
+    MW --> TASK
+    MW --> AGENT
+    MW --> RUNTIME
+    RUNTIME --> SCHED
+    RUNTIME --> EXEC
+    RUNTIME --> RECOV
     SCHED --> REPO
     SCHED --> SCORE
     EXEC --> REPO
-    RECOV --> REPO
-    REPO --> MODELS
+    EXEC --> PROC
+    EXEC --> ADAPTER
+    EXEC --> POLICY
+    TASK --> REPO
+    TASK --> POLICY
+    REPO --> MODEL --> DB
     REPO --> TRANS
-    MODELS --> DB
-    CFG -.모든 계층이 참조.-> APP
 ```
 
-의존 방향은 항상 **UI → application → domain/infrastructure** 한쪽입니다.
-domain은 아무것도 import하지 않는 순수 로직 계층입니다.
+의존 방향은 UI → application → domain/infrastructure입니다. UI는 DB 세션이나 프로세스를 직접 다루지 않습니다. 스케줄러 틱과 각 CLI 실행은 별도 SQLAlchemy 세션을 소유하며 UI 스레드를 막지 않습니다.
 
-## 2. 데이터 모델 (ERD)
+## 2. 데이터 모델
 
 ```mermaid
 erDiagram
@@ -59,118 +66,139 @@ erDiagram
         text title
         text prompt
         text project_path
-        text agent_policy "claude | codex | any"
-        text assigned_agent "선점한 AI"
-        int priority "0..100"
-        text status "8가지 상태"
-        text approval_mode "auto | confirm"
+        text agent_policy
+        text assigned_agent
+        int priority
+        text status
+        text approval_mode
         int max_retries
         int retry_count
-        datetime not_before "이 시각 전에는 실행 금지"
+        datetime not_before
+        datetime reserved_at
         datetime created_at
         json tags_json
     }
     task_dependencies {
-        int task_id PK, FK
-        int depends_on_task_id PK, FK
+        int task_id PK,FK
+        int depends_on_task_id PK,FK
     }
     agent_states {
-        text agent PK "claude | codex"
-        text status "available·cooldown 등"
-        datetime available_at "사용 가능 시각(수동 입력)"
+        text agent PK
+        text status
+        datetime available_at
         int current_task_id FK
+        datetime last_checked_at
     }
     task_runs {
         int id PK
         int task_id FK
         text agent
-        int attempt "몇 번째 시도"
-        json command_json "실행한 명령"
+        int attempt
+        json command_json
         int pid
         int exit_code
         text stdout_path
         text stderr_path
-        text error_type "usage_limit·auth 등"
+        text error_type
     }
     settings {
         text key PK
-        json value_json "schema_version 포함"
+        json value_json
     }
 
     tasks ||--o{ task_dependencies : "선행 작업"
     tasks ||--o{ task_runs : "실행 기록"
-    tasks |o--o| agent_states : "현재 실행 중"
+    tasks |o--o| agent_states : "현재 예약/실행"
 ```
+
+DB 시간은 SQLite의 제약 때문에 naive UTC로 저장하고 UI 경계에서만 로컬 시간으로 바꿉니다. enum은 읽을 수 있는 문자열 값으로 저장됩니다.
 
 ## 3. 작업 상태 전이
 
-`domain/transitions.py`가 이 그림 그대로를 코드로 강제합니다.
-그림에 없는 전이는 `InvalidTransitionError`가 발생합니다.
+`domain/transitions.py`가 허용 전이의 단일 기준이며, 상태 변경은 `TaskRepository.set_status()`를 통해서만 수행합니다.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> waiting: 작업 등록
-    waiting --> reserved: 스케줄러가 선점
-    waiting --> cancelled: 사용자 취소
-    reserved --> running: CLI 실행 시작
-    reserved --> waiting: 실행 전 복구 / 타임아웃
-    running --> succeeded: 정상 완료
-    running --> failed: 실패 (재시도 소진)
-    running --> retry_wait: 실패 (재시도 남음)
-    running --> blocked: 사용자 개입 필요
-    running --> waiting: 사용량 제한 감지 §7.2
-    retry_wait --> waiting: retry_delay 경과
+    [*] --> waiting
+    waiting --> reserved: 원자적 예약
+    waiting --> cancelled
+    reserved --> running: PID 확보 후 실행
+    reserved --> waiting: 거절/예약 복구
+    reserved --> blocked: 경로 정책 위반
+    running --> succeeded
+    running --> failed
+    running --> retry_wait
+    running --> blocked
+    running --> waiting: 사용량 제한
+    retry_wait --> waiting: 지연 만료
     retry_wait --> cancelled
-    blocked --> waiting: 차단 해제
+    blocked --> waiting: 사용자 재시도
     blocked --> cancelled
-    failed --> waiting: 사용자 재실행
+    failed --> waiting: 사용자 재시도
     succeeded --> [*]
     cancelled --> [*]
 ```
 
-## 4. 스케줄링 흐름
+실행 프로세스가 시작되면 PID와 OS 프로세스 생성 시각을 즉시 커밋합니다. 비정상 종료 뒤에는 두 값이 모두 일치할 때만 같은 프로세스로 인정합니다. PID 재사용 또는 생성 시각 확인 실패 시에는 무관한 프로세스를 종료하지 않고 자동 복구를 중단합니다.
+
+## 4. 예약과 실행
 
 ```mermaid
 flowchart TD
-    TICK[주기적 틱<br/>poll_interval_seconds] --> AVAIL{사용 가능한<br/>AI 있나?}
-    AVAIL -- 없음 --> TICK
-    AVAIL -- 있음 --> FILTER[후보 필터<br/>waiting · not_before 경과<br/>정책 일치 · 선행 작업 완료<br/>프로젝트 잠금 없음]
-    FILTER --> SCORE["점수 계산<br/>priority + 전용보너스(+20)<br/>+ 대기시간(시간당 +1, 최대 24)<br/>− 재시도(회당 5) + 의존보너스"]
-    SCORE --> RESERVE[["단일 트랜잭션으로 선점<br/>status=reserved<br/>assigned_agent 기록"]]
-    RESERVE --> APPROVE{approval_mode?}
-    APPROVE -- auto --> RUN[CLI 실행]
-    APPROVE -- confirm --> WAIT_USER[사용자 승인 대기] --> RUN
-    RUN --> RESULT{결과}
-    RESULT -- 성공 --> DONE[succeeded]
-    RESULT -- 실패·재시도 남음 --> RETRY[retry_wait] --> TICK
-    RESULT -- 사용량 제한 --> COOL[AI를 cooldown으로<br/>작업은 waiting으로] --> TICK
+    TICK[주기 틱] --> MAINT[재시도/쿨다운/오래된 예약 복구]
+    MAINT --> AG{설치되고 사용 가능한 AI}
+    AG --> FILTER[상태·시각·정책·선행 작업·프로젝트 잠금]
+    FILTER --> SCORE[우선순위 + 대기 + 전용 + 의존 보너스 - 재시도 패널티]
+    SCORE --> CAS[한 트랜잭션의 CAS 예약\ntask + agent_state]
+    CAS --> APPROVE{전역 자동 실행 AND 작업 auto?}
+    APPROVE -- 아니오 --> USER[승인 창]
+    USER -- 승인 --> RUN
+    USER -- 거절 --> WAIT[waiting 복구]
+    APPROVE -- 예 --> RUN[CLI 실행]
+    RUN --> RESULT{결과 분류}
+    RESULT --> DONE[succeeded/failed/retry_wait/blocked]
+    RESULT --> LIMIT[사용량 제한: agent cooldown + task waiting]
 ```
 
-핵심 안전 규칙: **선점(reserve)은 하나의 DB 트랜잭션** 안에서 이루어집니다.
-구현은 CAS(compare-and-swap) UPDATE 방식 — `WHERE status='waiting'` 조건이 붙은
-UPDATE는 경쟁 시 한쪽만 성공하므로 같은 `any` 작업이 두 AI에 배정될 수 없고,
-진 쪽은 자동으로 재선택합니다. 선점 시 `agent_states.current_task_id`도 함께
-기록되어 한 AI가 두 작업을 동시에 쥘 수 없습니다. 타임아웃을 넘긴 예약은
-`recovery_service`가 waiting으로 되돌립니다.
+예약은 `WHERE status='waiting'`, 동일 프로젝트의 `reserved/running` 행이 없다는 `NOT EXISTS`, `agent_states.current_task_id IS NULL` 조건을 둔 compare-and-swap UPDATE입니다. 두 에이전트가 같은 `any` 작업 또는 같은 프로젝트의 서로 다른 작업을 동시에 선택해도 한쪽만 성공합니다. `current_task_id`는 실행 시작이 아니라 예약 시점에 잡아 한 에이전트가 둘 이상의 작업을 보유하지 못하게 합니다.
 
-## 5. 파일 지도
+## 5. CLI 안전 경계
 
-| 경로 | 역할 | 상태 |
-|---|---|---|
-| `domain/enums.py` | 모든 상태·정책 enum | ✅ Phase 1 |
-| `domain/transitions.py` | 상태 전이 규칙 (위 3번 그림) | ✅ Phase 1 |
-| `domain/models.py` | DB 테이블 5개 (위 2번 그림) | ✅ Phase 1 |
-| `domain/clock.py` | UTC 시간 헬퍼 (테스트에서 시간 조작용) | ✅ Phase 1 |
-| `domain/scoring.py` | 우선순위·대기·재시도·의존성 기반 점수 계산 | ✅ Phase 2 |
-| `infrastructure/database.py` | 엔진 생성, FK/WAL PRAGMA, 스키마 버전 | ✅ Phase 1 |
-| `infrastructure/process_runner.py` | 서브프로세스 실행 (로그 스트리밍·타임아웃·취소) | ✅ Phase 3 |
-| `infrastructure/repositories.py` | CRUD 창구 — 상태 변경은 `set_status()`만 사용 | ✅ Phase 1 |
-| `config/defaults.py` | 모든 튜닝값 (점수 가중치, 제한 패턴) | ✅ Phase 0 |
-| `config/loader.py` | TOML 로드 + 검증 | ✅ Phase 0 |
-| `infrastructure/logging_config.py` | 콘솔 + 회전 파일 로그 | ✅ Phase 0 |
-| `application/scheduler_service.py` | 후보 필터·점수·동점 처리 + CAS 원자적 선점 | ✅ Phase 2 |
-| `application/recovery_service.py` | 예약 타임아웃 해제 + retry_wait→waiting 승격 | ✅ Phase 2~3 |
-| `application/execution_service.py` | 예약된 작업 실행, 성공/실패/재시도/제한/취소 처리 | ✅ Phase 3 |
-| `infrastructure/adapters/base.py` | AgentAdapter 프로토콜 (명령 생성 + 오류 분류) | ✅ Phase 3 |
-| `infrastructure/adapters/` | Claude/Codex CLI 어댑터 | ⬜ Phase 4 |
-| `ui/` | PySide6 창·트레이 | ⬜ Phase 5 |
+- 프로젝트 경로는 절대 경로·실재 디렉터리여야 하고 `allowed_project_roots` 아래여야 합니다.
+- 빈 허용 루트는 모든 실행을 차단합니다.
+- Claude는 `--permission-mode auto --no-session-persistence`, Codex는 `--sandbox workspace-write --ask-for-approval never --ephemeral` 조합을 사용합니다.
+- 사용자 프롬프트는 표준 입력으로 보내며 `task_runs.command_json`에 중복 저장하지 않습니다.
+- stdout/stderr는 파일로 스트리밍해 긴 출력으로 메모리가 증가하지 않게 합니다.
+- 취소·타임아웃·복구는 `psutil`로 전체 하위 프로세스 트리를 종료합니다.
+- 복구 종료 직전에도 예상 생성 시각을 다시 비교해 PID 검증과 종료 사이의 재사용을 막습니다.
+- Claude의 구조화 `rate_limit_event`는 `rate_limit_info.status=allowed`이면 정상으로 처리하고, 일반 제한 문자열은 비정상 종료에서만 보조 분류합니다.
+
+## 6. 주요 파일
+
+| 경로 | 역할 |
+|---|---|
+| `application/runtime.py` | APScheduler 틱, asyncio 실행 루프, 승인·거절·중단 |
+| `application/task_service.py` | 작업 CRUD·복제·재시도·맨 위 이동·완료 보관·의존성 검증 |
+| `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
+| `application/scheduler_service.py` | 후보 필터·점수·CAS 예약 |
+| `application/execution_service.py` | CLI 실행과 여섯 결과 경로 처리 |
+| `application/recovery_service.py` | 오래된 예약·재시도·고아 PID 복구 |
+| `infrastructure/adapters/` | 설치 확인, 안전한 명령 구성, 오류 분류 |
+| `infrastructure/process_runner.py` | 비동기 subprocess, stdin, 로그, 취소, 타임아웃 |
+| `infrastructure/path_policy.py` | 프로젝트 허용 루트 검증 |
+| `infrastructure/backup.py` | SQLite 온라인 백업과 무결성 검사 |
+| `config/exporter.py` | 유효 설정의 결정적 TOML 내보내기 |
+| `infrastructure/windows_startup.py` | HKCU Run 시작 프로그램 등록 |
+| `ui/` | 메인 창, 작업/승인 UI, 로그, 트레이 |
+| `scripts/build_windows.ps1` | PyInstaller onedir 빌드·버전 스모크 |
+| `scripts/run_soak.ps1` | 20개 작업·재시작 소크 반복 |
+
+## 7. 복구와 운영
+
+- SQLite 연결마다 foreign key와 WAL을 활성화합니다.
+- 예약 타임아웃, 재시도 승격, 에이전트 쿨다운 해제는 매 틱 먼저 수행합니다.
+- 시작 시 `running` 작업의 마지막 PID를 검사하고 대기 복구 또는 실패 처리를 사용자에게 묻습니다.
+- 온라인 백업은 SQLite backup API를 쓰고 결과에 `PRAGMA integrity_check`를 실행합니다.
+- 설정 내보내기는 검증과 상대 경로 해석을 마친 유효 값을 기록합니다.
+- Windows 시작 프로그램은 현재 사용자 범위의 HKCU Run 키만 사용하며 명시적 옵션입니다.
+- 완료 보관은 v1의 고정된 8개 상태를 늘리지 않고 예약된 내부 태그로 저장하며, 사용자 태그·복제 작업에는 노출되지 않습니다.

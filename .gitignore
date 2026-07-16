@@ -8,3 +8,4 @@ build/
 *.egg-info/
 ai-queue-runner/logs/
 ai-queue-runner/data/
+ai-queue-runner/.omx/

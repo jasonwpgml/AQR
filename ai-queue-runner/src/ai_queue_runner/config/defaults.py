@@ -14,11 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_CONFIG_FILENAME = "config.toml"
 
-# AIDEV-NOTE: limit_patterns are matched against real CLI output in Phase 4; these
-# defaults are placeholders and must stay user-editable (plan §7.2 [RISK]).
+# AIDEV-NOTE: these include Claude's observed JSONL `rate_limit_event`/session-limit
+# output, but must stay user-editable because both CLIs can change wording (§7.2).
 DEFAULT_LIMIT_PATTERNS = [
     "usage limit",
     "rate limit",
+    "rate_limit",
+    "session limit",
 ]
 
 
@@ -53,12 +55,16 @@ class SchedulerSection(StrictModel):
 
 class AgentSection(StrictModel):
     enabled: bool = True
+    executable: str | None = None
     run_timeout_minutes: int = Field(default=120, ge=1)
     limit_patterns: list[str] = Field(default_factory=lambda: list(DEFAULT_LIMIT_PATTERNS))
 
 
 def default_agents() -> dict[str, AgentSection]:
-    return {"claude": AgentSection(), "codex": AgentSection()}
+    return {
+        "claude": AgentSection(executable="claude"),
+        "codex": AgentSection(executable="codex"),
+    }
 
 
 class AppConfig(StrictModel):

@@ -2,16 +2,24 @@ from pathlib import Path
 
 import pytest
 
-from ai_queue_runner.config.defaults import AppConfig
-from ai_queue_runner.config.loader import ConfigError, load_config
+from ai_queue_runner.config.loader import ConfigError, default_app_data_dir, load_config
 
 
 def test_defaults_when_no_config_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     config = load_config()
-    assert config == AppConfig()
     assert config.app.global_auto_run is False
+    assert config.app.db_path == tmp_path / "local" / "AIQueueRunner" / "data/queue.db"
+    assert config.app.logs_dir == tmp_path / "local" / "AIQueueRunner" / "logs"
     assert set(config.agents) == {"claude", "codex"}
+
+
+def test_default_app_data_dir_has_home_fallback(tmp_path, monkeypatch):
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert default_app_data_dir() == tmp_path / ".local/share/ai-queue-runner"
 
 
 def test_explicit_missing_path_raises(tmp_path):
@@ -42,6 +50,8 @@ limit_patterns = ["custom limit message"]
     assert config.app.log_level == "DEBUG"
     assert config.scheduler.dedicated_agent_bonus == 30
     assert config.agents["claude"].limit_patterns == ["custom limit message"]
+    assert config.agents["claude"].executable == "claude"
+    assert config.agents["codex"].executable == "codex"
     # unspecified sections keep defaults
     assert config.scheduler.retry_penalty_per_attempt == 5
 
@@ -65,6 +75,14 @@ def test_unknown_key_rejected(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("[app]\nglobal_autorun = true\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="invalid configuration"):
+        load_config(path)
+
+
+def test_unknown_agent_table_rejected(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[agents.claudee]\nenabled = true\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="unsupported agent"):
         load_config(path)
 
 

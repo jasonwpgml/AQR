@@ -22,3 +22,20 @@ D017 Human-facing diagrams live in docs/ARCHITECTURE.md (Korean, Mermaid) and mu
 D018 Reservation uses compare-and-swap UPDATEs (WHERE status='waiting' / current_task_id IS NULL) instead of BEGIN IMMEDIATE; a lost race rolls back and re-selects
 D019 agent_states.current_task_id is claimed at reservation time (not run start), so one agent can never hold two reservations; execution/recovery must clear it
 D020 Adapters only build commands and classify errors; ProcessRunner owns execution (deviation from plan §6.1 run())
+D021 Process liveness uses psutil only; os.kill(pid, 0) is forbidden on Windows because it TerminateProcess-es the target
+D022 Phase 4 CLI compatibility floor is Claude Code 2.1.211 and Codex CLI 0.144.3, verified from installed --help/version output
+D023 Queue CLI runs never use dangerous bypass flags: Claude uses permission-mode auto; Codex uses approval never inside workspace-write sandbox
+D024 Wrapped prompts are sent over stdin, not command arguments, to avoid Windows command-line limits and duplicate prompt storage in task_runs.command
+D025 Claude sessions and Codex rollouts are ephemeral for queue work (`--no-session-persistence`, `--ephemeral`)
+D026 Implicit configuration uses a stable per-user writable directory (`%LOCALAPPDATA%/AIQueueRunner` on Windows); explicit relative DB/log paths remain config-file-relative
+D027 Runtime dependencies target PySide6 6.11.x and APScheduler 3.11.x; Windows builds pin PyInstaller 6.21.0 and use `onedir`
+D028 Empty `allowed_project_roots` blocks all execution; a reserved task with an invalid/out-of-policy path transitions to `blocked`
+D029 Phase 6 maintenance is exposed as one-shot CLI options (`--backup`, `--export-config`, `--startup`) so it also works from the packaged executable
+D030 Windows per-user startup uses the HKCU Run key; development launches use `python -m ai_queue_runner`, while frozen launches call the executable directly
+D031 Process recovery identifies an owned process by both PID and exact OS creation time; unreadable or changed identity is never killed automatically
+D032 Authentication errors block the task and put the agent in `error`; only usage-limit errors return the task to waiting and put the agent in `cooldown`
+D033 Exit-zero CLI output is not matched against generic limit/auth substrings; Claude's structured `rate_limit_event` is authoritative except when its status is `allowed`
+D034 Completed-task archival uses a reserved internal tag because v1's eight-state schema has no archive state; the marker is hidden from user tags and stripped on duplication
+D035 “Move to top” assigns priority 100 and demotes other waiting priority-100 tasks to 99, preserving the configured 0..100 priority model without a schema-only queue-position field
+D036 Exclusive project locking is part of the atomic task-claim UPDATE (`NOT EXISTS` reserved/running same-path row), not only the pre-selection snapshot
+D037 Application services expose one canonical method name per operation; the UI does not carry compatibility aliases or signature-inspection fallbacks

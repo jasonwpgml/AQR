@@ -31,6 +31,9 @@ class FakeAdapter:
     def build_command(self, task: Task) -> list[str]:
         return list(self.command)
 
+    def build_stdin(self, task: Task) -> str | None:
+        return None
+
     def classify_error(self, output: str, exit_code: int | None) -> ErrorType:
         folded = output.casefold()
         return next(

@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from ai_queue_runner.config.defaults import AgentSection
+from ai_queue_runner.domain.enums import ErrorType
+from ai_queue_runner.domain.models import Task
+from ai_queue_runner.infrastructure.adapters.claude import ClaudeAdapter
+from ai_queue_runner.infrastructure.adapters.codex import CodexAdapter
+
+
+def make_task(**overrides) -> Task:
+    values = {
+        "id": 42,
+        "title": "Adapter test",
+        "prompt": "Fix it; echo $TOKEN && rm -rf .",
+        "project_path": "C:/projects/demo",
+        "agent_policy": "any",
+    }
+    values.update(overrides)
+    return Task(**values)
+
+
+def test_claude_command_matches_inspected_cli_contract():
+    task = make_task()
+
+    command = ClaudeAdapter().build_command(task)
+
+    assert command[:7] == [
+        "claude",
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        "auto",
+    ]
+    assert command[7] == "--no-session-persistence"
+    assert len(command) == 8
+    stdin_text = ClaudeAdapter().build_stdin(task)
+    assert "Work only inside: C:/projects/demo" in stdin_text
+    assert "Task ID: 42" in stdin_text
+    assert task.prompt in stdin_text
+
+
+def test_codex_command_matches_inspected_cli_contract():
+    task = make_task()
+
+    command = CodexAdapter().build_command(task)
+
+    assert command[:13] == [
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--sandbox",
+        "workspace-write",
+        "--cd",
+        "C:/projects/demo",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--color",
+        "never",
+        "--json",
+    ]
+    assert len(command) == 14
+    assert command[-1] == "-"
+    assert task.prompt in CodexAdapter().build_stdin(task)
+
+
+@pytest.mark.parametrize("adapter_type", [ClaudeAdapter, CodexAdapter])
+def test_prompt_metacharacters_remain_inside_one_argument(adapter_type):
+    adapter = adapter_type()
+    command = adapter.build_command(make_task())
+
+    assert "echo $TOKEN && rm -rf ." in adapter.build_stdin(make_task())
+    assert all(part != "&&" for part in command)
+
+
+@pytest.mark.parametrize("adapter_type", [ClaudeAdapter, CodexAdapter])
+def test_limit_patterns_are_config_driven(adapter_type):
+    adapter = adapter_type(AgentSection(limit_patterns=["custom quota exhausted"]))
+
+    assert (
+        adapter.classify_error("CUSTOM QUOTA EXHAUSTED", 1)
+        is ErrorType.USAGE_LIMIT
+    )
+    assert adapter.classify_error("rate limit", 1) is ErrorType.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("adapter", "output"),
+    [
+        (ClaudeAdapter(), "Not logged in. Run /login"),
+        (CodexAdapter(), "401 Unauthorized: missing OPENAI_API_KEY"),
+    ],
+)
+def test_authentication_errors_are_classified(adapter, output):
+    assert adapter.classify_error(output, 1) is ErrorType.AUTH
+
+
+def test_claude_real_session_limit_output_is_classified():
+    output = '{"type":"rate_limit_event","error":"rate_limit"}\nSession limit reached'
+
+    assert ClaudeAdapter().classify_error(output, 1) is ErrorType.USAGE_LIMIT
+
+
+def test_claude_allowed_rate_limit_event_is_not_an_error():
+    output = (
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}\n'
+        '{"type":"result","subtype":"success","is_error":false}'
+    )
+
+    assert ClaudeAdapter().classify_error(output, 0) is ErrorType.UNKNOWN
+
+
+@pytest.mark.parametrize("adapter_type", [ClaudeAdapter, CodexAdapter])
+def test_success_text_discussing_limits_is_not_an_error(adapter_type):
+    output = '{"type":"assistant","message":"Explain rate limit and authentication failed"}'
+
+    assert adapter_type().classify_error(output, 0) is ErrorType.UNKNOWN
+
+
+@pytest.mark.parametrize("adapter_type", [ClaudeAdapter, CodexAdapter])
+def test_negative_exit_is_classified_as_crash(adapter_type):
+    assert adapter_type().classify_error("", -9) is ErrorType.CRASH
+
+
+def test_installation_check_uses_path_lookup(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda executable: f"C:/bin/{executable}.exe")
+
+    assert ClaudeAdapter().is_installed()
+    assert CodexAdapter().is_installed()
+
+
+@pytest.mark.parametrize("adapter_type", [ClaudeAdapter, CodexAdapter])
+def test_disabled_adapter_is_not_available(adapter_type, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda _executable: "C:/tools/agent.exe")
+
+    assert adapter_type(AgentSection(enabled=False)).is_installed() is False
+
+
+def test_version_check_is_bounded_and_shell_free(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="tool 1.2.3\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert ClaudeAdapter().get_version() == "tool 1.2.3"
+    assert calls == [
+        (
+            ["claude", "--version"],
+            {
+                "capture_output": True,
+                "check": False,
+                "shell": False,
+                "text": True,
+                "timeout": 5,
+            },
+        )
+    ]
+
+
+def test_version_check_handles_missing_executable(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+    assert CodexAdapter().get_version() is None
+
+
+def test_version_check_rejects_nonzero_exit(monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="not a usable version",
+            stderr="failed",
+        ),
+    )
+
+    assert ClaudeAdapter().get_version() is None
+
+
+def test_configured_executable_is_used():
+    adapter = CodexAdapter(AgentSection(executable="C:/tools/codex-custom.exe"))
+
+    assert adapter.build_command(make_task())[0] == "C:/tools/codex-custom.exe"
+
+
+def test_prompt_templates_are_packaged():
+    package_root = Path(__file__).parents[2] / "src" / "ai_queue_runner" / "prompts"
+
+    assert (package_root / "claude_wrapper.txt").is_file()
+    assert (package_root / "codex_wrapper.txt").is_file()

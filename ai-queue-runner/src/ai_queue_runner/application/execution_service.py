@@ -13,6 +13,7 @@ from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentStatus, ErrorType, TaskStatus
 from ai_queue_runner.domain.models import Task, TaskRun
 from ai_queue_runner.infrastructure.adapters.base import AgentAdapter
+from ai_queue_runner.infrastructure.path_policy import PathPolicyError, validate_project_path
 from ai_queue_runner.infrastructure.process_runner import ProcessRunner, ProcessRunResult
 from ai_queue_runner.infrastructure.repositories import (
     AgentStateRepository,
@@ -41,6 +42,15 @@ class ExecutionService:
         if task.assigned_agent != adapter.name:
             raise ValueError("reserved task is assigned to a different agent")
 
+        try:
+            canonical_project_path = validate_project_path(
+                task.project_path,
+                self._config.app.allowed_project_roots,
+            )
+        except PathPolicyError as exc:
+            self._record_invalid_path(session, task, adapter, exc)
+            raise
+        task.project_path = str(canonical_project_path)
         command = adapter.build_command(task)
         attempt = task.retry_count + 1
         task_log_dir = self._config.app.logs_dir / "tasks" / str(task.id)
@@ -76,6 +86,16 @@ class ExecutionService:
                 stderr_path=stderr_path,
                 timeout_seconds=self._timeout_seconds(adapter),
                 env=None,
+                # AIDEV-NOTE: prompts travel over stdin to avoid Windows command-line
+                # limits and to keep task text out of the persisted command array.
+                stdin_text=adapter.build_stdin(task),
+                on_started=lambda pid, process_started_at: self._record_started(
+                    session,
+                    task,
+                    run,
+                    pid,
+                    process_started_at,
+                ),
             )
         except asyncio.CancelledError:
             self._record_cancelled(task_repo, task, run, agent_state)
@@ -99,6 +119,35 @@ class ExecutionService:
         session.commit()
         return run
 
+    @staticmethod
+    def _record_invalid_path(
+        session: Session,
+        task: Task,
+        adapter: AgentAdapter,
+        exc: PathPolicyError,
+    ) -> None:
+        TaskRepository(session).set_status(task, TaskStatus.BLOCKED)
+        task.assigned_agent = None
+        task.reserved_at = None
+        task.last_error = str(exc)
+        agent_state = AgentStateRepository(session).get_or_create(adapter.name)
+        agent_state.status = AgentStatus.AVAILABLE
+        agent_state.current_task_id = None
+        session.commit()
+
+    @staticmethod
+    def _record_started(
+        session: Session,
+        task: Task,
+        run: TaskRun,
+        pid: int,
+        started_at,
+    ) -> None:
+        run.pid = pid
+        run.started_at = started_at
+        task.started_at = started_at
+        session.commit()
+
     def _timeout_seconds(self, adapter: AgentAdapter) -> float:
         return self._config.agents[adapter.name.value].run_timeout_minutes * 60
 
@@ -116,17 +165,32 @@ class ExecutionService:
         run.pid = result.pid
         run.exit_code = result.exit_code
         run.finished_at = result.finished_at
+        output_tail = _read_output_tail(stderr_path, stdout_path)
+        classified_error = adapter.classify_error(output_tail, result.exit_code)
+        settings = self._config.agents[adapter.name.value]
+        matched_unstructured_limit = (
+            result.exit_code != 0
+            and _matches_usage_limit(output_tail, settings.limit_patterns)
+        )
 
-        if result.exit_code == 0:
+        if (
+            result.exit_code == 0
+            and classified_error not in {ErrorType.AUTH, ErrorType.USAGE_LIMIT, ErrorType.CRASH}
+            and not matched_unstructured_limit
+        ):
             task_repo.set_status(task, TaskStatus.SUCCEEDED)
             task.finished_at = result.finished_at
+            task.last_error = None
             agent_state.status = AgentStatus.AVAILABLE
             agent_state.current_task_id = None
+            agent_state.available_at = None
+            agent_state.last_error = None
             return
 
-        output_tail = _read_output_tail(stderr_path, stdout_path)
-        settings = self._config.agents[adapter.name.value]
-        if _matches_usage_limit(output_tail, settings.limit_patterns):
+        if (
+            classified_error is ErrorType.USAGE_LIMIT
+            or matched_unstructured_limit
+        ):
             run.error_type = ErrorType.USAGE_LIMIT
             task_repo.set_status(task, TaskStatus.WAITING)
             task.assigned_agent = None
@@ -139,10 +203,20 @@ class ExecutionService:
             agent_state.last_error = task.last_error
             return
 
+        if classified_error is ErrorType.AUTH:
+            run.error_type = ErrorType.AUTH
+            task_repo.set_status(task, TaskStatus.BLOCKED)
+            task.last_error = output_tail or "authentication failed"
+            task.finished_at = result.finished_at
+            agent_state.status = AgentStatus.ERROR
+            agent_state.current_task_id = None
+            agent_state.last_error = task.last_error
+            return
+
         error_type = (
             ErrorType.TIMEOUT
             if result.timed_out
-            else adapter.classify_error(output_tail, result.exit_code)
+            else classified_error
         )
         error_message = output_tail or _default_failure_message(result)
         self._record_failure(

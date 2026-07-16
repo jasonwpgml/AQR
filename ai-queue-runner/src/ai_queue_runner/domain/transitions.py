@@ -13,7 +13,7 @@ _S = TaskStatus
 ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     _S.WAITING: frozenset({_S.RESERVED, _S.CANCELLED}),
     # reserved -> waiting: reservation released before the run started
-    _S.RESERVED: frozenset({_S.RUNNING, _S.WAITING}),
+    _S.RESERVED: frozenset({_S.RUNNING, _S.WAITING, _S.BLOCKED}),
     # running -> waiting: usage limit detected mid-run, task goes back to queue (plan §7.2)
     _S.RUNNING: frozenset({_S.SUCCEEDED, _S.FAILED, _S.RETRY_WAIT, _S.BLOCKED, _S.WAITING}),
     _S.RETRY_WAIT: frozenset({_S.WAITING, _S.CANCELLED}),

@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
@@ -56,35 +56,91 @@ def reserve_next_task(
             if candidate is None:
                 session.rollback()
                 return None
-
-            task_claimed = session.execute(
-                update(Task)
-                .where(Task.id == candidate.id, Task.status == TaskStatus.WAITING)
-                .values(
-                    status=TaskStatus.RESERVED,
-                    assigned_agent=agent,
-                    reserved_at=now_,
-                    updated_at=now_,
-                )
-                .execution_options(synchronize_session=False)
-            ).rowcount
-            # AIDEV-NOTE: current_task_id is set at reservation (not run start) so an
-            # agent can never hold two reservations; recovery/execution must clear it.
-            agent_claimed = session.execute(
-                update(AgentState)
-                .where(AgentState.agent == agent, AgentState.current_task_id.is_(None))
-                .values(current_task_id=candidate.id)
-                .execution_options(synchronize_session=False)
-            ).rowcount
-
-            if task_claimed == 1 and agent_claimed == 1:
-                session.commit()
-                session.refresh(candidate)
+            if _claim_task(session, candidate, agent, now_):
                 return candidate
             session.rollback()  # lost the race; re-select on next attempt
         except OperationalError:
             session.rollback()  # SQLite write-lock contention; retry briefly
     return None
+
+
+def reserve_specific_task(
+    session: Session,
+    config: AppConfig,
+    task_id: int,
+    agent: AgentName,
+    now: datetime | None = None,
+) -> Task | None:
+    """Atomically reserve one user-selected task if it is eligible for ``agent``."""
+    now = utcnow() if now is None else now
+    try:
+        state = AgentStateRepository(session).get_or_create(agent)
+        task = session.get(Task, task_id)
+        if task is None:
+            session.rollback()
+            return None
+        locking_tasks = session.scalars(
+            select(Task).where(
+                Task.status.in_(LOCKING_STATUSES),
+                Task.id != task_id,
+            )
+        ).all()
+        candidate = SchedulerService(config).select_task(
+            [task, *locking_tasks],
+            agent,
+            state,
+            now,
+        )
+        if candidate is None or candidate.id != task_id:
+            session.rollback()
+            return None
+        if _claim_task(session, candidate, agent, now):
+            return candidate
+        session.rollback()
+    except OperationalError:
+        session.rollback()
+    return None
+
+
+def _claim_task(
+    session: Session,
+    candidate: Task,
+    agent: AgentName,
+    now: datetime,
+) -> bool:
+    locking_task = aliased(Task)
+    task_claimed = session.execute(
+        update(Task)
+        .where(
+            Task.id == candidate.id,
+            Task.status == TaskStatus.WAITING,
+            ~exists().where(
+                locking_task.id != candidate.id,
+                locking_task.project_path == candidate.project_path,
+                locking_task.status.in_(LOCKING_STATUSES),
+            ),
+        )
+        .values(
+            status=TaskStatus.RESERVED,
+            assigned_agent=agent,
+            reserved_at=now,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    # AIDEV-NOTE: current_task_id is set at reservation (not run start) so an
+    # agent can never hold two reservations; recovery/execution must clear it.
+    agent_claimed = session.execute(
+        update(AgentState)
+        .where(AgentState.agent == agent, AgentState.current_task_id.is_(None))
+        .values(current_task_id=candidate.id)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if task_claimed != 1 or agent_claimed != 1:
+        return False
+    session.commit()
+    session.refresh(candidate)
+    return True
 
 
 class SchedulerService:

@@ -1,43 +1,40 @@
 FROM: codex
-TO: claude
-TASK: T009
+TO: maintenance
+TASK: T001-T016 / AI Queue Runner v0.1
 STATUS: completed
 
-CHANGED:
-- src/ai_queue_runner/infrastructure/adapters/__init__.py
-- src/ai_queue_runner/infrastructure/adapters/base.py
-- src/ai_queue_runner/application/execution_service.py
-- src/ai_queue_runner/application/recovery_service.py
-- src/ai_queue_runner/config/defaults.py
-- config.example.toml
-- tests/fakes.py
-- tests/integration/test_execution_service.py
-- .agent/STATE.md
-- .agent/TASKS.md
-- .agent/DECISIONS.md
-- .agent/HANDOFF.md
+DELIVERED:
+- Persistent SQLite queue with strict state transitions, dependencies, scoring, project locks, and atomic per-agent reservation
+- Async Claude/Codex process execution with stdin prompts, streamed logs, timeout/cancel, retry, usage-limit/auth handling, and PID+creation-time crash recovery
+- Safe absolute-path/allowed-root policy and conservative CLI flags
+- PySide6 desktop task management, immediate run, move-to-top, archive, approvals, logs, agent availability, tray controls, and lifecycle notifications
+- SQLite online backup, effective-config export, per-user Windows startup registration, and PyInstaller onedir packaging
+- UTF-8 README, architecture, design, third-party notices, build and soak scripts
 
-VERIFIED:
-- ..\.venv\Scripts\python -m pytest -q
-  -> 100 passed in 4.08s
-- ..\.venv\Scripts\python -m ruff check src tests
-  -> All checks passed!
-- rg -n "shell=True|os.system" src/
-  -> no matches
-- rg -n "\.status =" src/ai_queue_runner/application/
-  -> only SQL query comparisons and agent-state assignments; no task.status assignment
-- git diff --check
-  -> no whitespace errors
+VERIFIED 2026-07-16:
+- `python -m pytest -q` -> 186 passed
+- `python -m ruff check src tests` -> clean
+- Source Qt offscreen smoke -> exit 0
+- 20-task queue with mid-run runtime restart -> passed; accelerated soak wrapper -> passed
+- Real Codex noninteractive smoke -> `QUEUE_SMOKE_OK`
+- Real Claude Code 2.1.211 noninteractive/no-session smoke -> `QUEUE_CLAUDE_SMOKE_OK`
+- Claude's successful `rate_limit_event(status=allowed)` captured and covered by classifier regression
+- PyInstaller 6.21.0 onedir build -> `dist/AIQueueRunner/AIQueueRunner.exe`
+- Packaged version, hidden GUI, config export, verified DB backup -> exit 0
+- Packaged Qt `qwindows.dll` -> present
+- Ralph-scoped anti-slop pass -> redundant service aliases removed, duplicated availability logic consolidated, fail-safe paths regression-tested
+
+SAFETY INVARIANTS:
+- Empty `allowed_project_roots` blocks execution.
+- Prompts never enter shell strings or persisted command arrays.
+- Recovery kills a PID only when exact OS creation time still matches; unknown or reused identities are not killed.
+- Status changes go through `TaskRepository.set_status()`; direct task status assignment remains confined to that repository.
+- Project exclusivity is rechecked inside the reservation CAS, so concurrent agents cannot reserve different tasks for the same project.
+- Unknown config keys/agent tables are hard errors; partial agent configuration preserves both built-ins.
+
+REMAINING VALIDATION GAP:
+- The deterministic 20-task soak scenario passes, but the literal eight-hour wall-clock run was not held open in this session. Run `scripts/run_soak.ps1` for that operational-duration qualification.
 
 NOTES:
-- ExecutionService commits reserved -> running, BUSY agent state, and the TaskRun before
-  spawning, preserving D019's duplicate-execution safety boundary.
-- Success, retry exhaustion, usage limit, timeout, spawn failure, and cancellation all persist
-  their required task/run/agent outcomes; cancellation is committed before re-raising.
-- Usage-limit matching is case-insensitive and bounded to log tails; subprocess environments are
-  neither supplied nor persisted.
-- promote_retry_tasks owns its transaction and returns due retry_wait tasks to waiting.
-- FakeAdapter remains command-configurable and reusable for Phase 4/5 integration tests.
-
-RISKS:
-- T009b still needs PID-based startup recovery for tasks left in running state (plan §8.5).
+- PyInstaller reports missing optional SQLAlchemy database drivers only; SQLite/PySide packaged smokes pass.
+- Qt/PySide redistribution obligations are summarized in `THIRD_PARTY_NOTICES.md` and must be reviewed before external distribution.
