@@ -57,7 +57,10 @@ def main(argv: list[str] | None = None) -> int:
 
     active_config_path = _select_active_config_path(args.config)
     try:
-        config = load_config(args.config)
+        # AIDEV-NOTE: load from active_config_path, not args.config — the GUI settings
+        # dialog saves to the app-data config.toml, which must apply on the next start.
+        # A missing explicit --config still falls through so load_config raises for it.
+        config = load_config(active_config_path if active_config_path.exists() else args.config)
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2

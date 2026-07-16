@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from enum import IntEnum
 from pathlib import Path
 from typing import Any
@@ -90,6 +91,9 @@ class TaskTableModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.UserRole:
             return task
+        if role == Qt.ItemDataRole.ToolTipRole:
+            last_error = getattr(task, "last_error", None)
+            return f"마지막 오류:\n{last_error}" if last_error else None
         if role == Qt.ItemDataRole.TextAlignmentRole and column is TaskColumn.PRIORITY:
             return Qt.AlignmentFlag.AlignCenter
         if role == Qt.ItemDataRole.ForegroundRole and column is TaskColumn.STATUS:
@@ -108,6 +112,8 @@ class TaskTableModel(QAbstractTableModel):
             if bool(getattr(task, "archived", False)):
                 return "보관됨"
             status = enum_value(getattr(task, "status", ""))
+            if status == TaskStatus.RETRY_WAIT.value:
+                return _retry_wait_label(getattr(task, "not_before", None))
             return _STATUS_LABELS.get(status, status)
         if column is TaskColumn.TITLE:
             return getattr(task, "title", "")
@@ -137,3 +143,10 @@ def _queue_order(tasks: Iterable[object]) -> list[object]:
             int(getattr(task, "id", 0)),
         ),
     )
+
+
+def _retry_wait_label(not_before: object) -> str:
+    if not isinstance(not_before, datetime):
+        return _STATUS_LABELS[TaskStatus.RETRY_WAIT.value]
+    utc_value = not_before.replace(tzinfo=UTC) if not_before.tzinfo is None else not_before
+    return f"재시도 대기 ({utc_value.astimezone():%H:%M})"

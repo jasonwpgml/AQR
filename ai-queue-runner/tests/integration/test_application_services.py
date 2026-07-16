@@ -214,6 +214,65 @@ def test_move_to_top_and_archive_completed_task(application) -> None:
     assert duplicate.status is TaskStatus.WAITING
 
 
+def test_delete_terminal_task_removes_its_run_history(application) -> None:
+    tasks, _agents, factory, project = application
+    created = tasks.create(draft(project, title="completed"))
+    with factory() as session:
+        repo = TaskRepository(session)
+        task = repo.get(created.id)
+        repo.set_status(task, TaskStatus.RESERVED)
+        repo.set_status(task, TaskStatus.RUNNING)
+        repo.set_status(task, TaskStatus.SUCCEEDED)
+        TaskRunRepository(session).add(
+            TaskRun(
+                task_id=task.id,
+                agent=AgentName.CODEX,
+                attempt=1,
+                command=["codex", "exec"],
+                exit_code=0,
+            )
+        )
+        session.commit()
+
+    tasks.delete(created.id)
+
+    assert tasks.get(created.id) is None
+    with factory() as session:
+        assert TaskRunRepository(session).list_for_task(created.id) == []
+
+
+@pytest.mark.parametrize("status", [TaskStatus.RESERVED, TaskStatus.RUNNING])
+def test_delete_rejects_reserved_and_running_tasks(application, status) -> None:
+    tasks, _agents, factory, project = application
+    created = tasks.create(draft(project, title=status.value))
+    with factory() as session:
+        repo = TaskRepository(session)
+        task = repo.get(created.id)
+        repo.set_status(task, TaskStatus.RESERVED)
+        if status is TaskStatus.RUNNING:
+            repo.set_status(task, TaskStatus.RUNNING)
+        session.commit()
+
+    with pytest.raises(ValueError, match="must be cancelled before deletion"):
+        tasks.delete(created.id)
+
+
+def test_delete_lists_dependents_and_allows_removal_after_they_are_deleted(application) -> None:
+    tasks, _agents, _factory, project = application
+    prerequisite = tasks.create(draft(project, title="prerequisite"))
+    dependent = tasks.create(
+        draft(project, title="dependent", dependency_ids=[prerequisite.id])
+    )
+
+    with pytest.raises(ValueError, match=rf"dependent tasks: {dependent.id}"):
+        tasks.delete(prerequisite.id)
+
+    tasks.delete(dependent.id)
+    tasks.delete(prerequisite.id)
+
+    assert tasks.list() == []
+
+
 def test_agent_manual_availability_and_due_promotion(application) -> None:
     _tasks, agents, _factory, _project = application
     now = utcnow()

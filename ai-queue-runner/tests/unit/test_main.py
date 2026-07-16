@@ -24,6 +24,25 @@ def test_main_reports_config_error(tmp_path, capsys):
     assert "config error" in capsys.readouterr().err
 
 
+def test_main_loads_app_data_config_when_no_cwd_config(tmp_path, monkeypatch):
+    """Settings saved by the GUI dialog to the app-data config apply on next start."""
+    monkeypatch.chdir(tmp_path)  # no config.toml in cwd
+    app_data = tmp_path / "appdata"
+    app_data.mkdir()
+    (app_data / "config.toml").write_text(
+        '[app]\nallowed_project_roots = ["C:/projects"]\n', encoding="utf-8"
+    )
+    monkeypatch.setattr("ai_queue_runner.main.default_app_data_dir", lambda: app_data)
+    seen = []
+    monkeypatch.setattr(
+        "ai_queue_runner.main.run_desktop_app",
+        lambda config, **kwargs: seen.append(config) or 0,
+    )
+
+    assert main(["--no-tray"]) == 0
+    assert [root.as_posix() for root in seen[0].app.allowed_project_roots] == ["C:/projects"]
+
+
 def test_main_exports_effective_config_without_starting_ui(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(

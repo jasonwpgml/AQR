@@ -26,7 +26,9 @@ def make_task(**overrides) -> Task:
     return Task(**values)
 
 
-def test_claude_command_matches_inspected_cli_contract():
+def test_claude_command_matches_inspected_cli_contract(monkeypatch, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     task = make_task()
 
     command = ClaudeAdapter().build_command(task)
@@ -48,7 +50,9 @@ def test_claude_command_matches_inspected_cli_contract():
     assert task.prompt in stdin_text
 
 
-def test_codex_command_matches_inspected_cli_contract():
+def test_codex_command_matches_inspected_cli_contract(monkeypatch, tmp_path):
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     task = make_task()
 
     command = CodexAdapter().build_command(task)
@@ -203,11 +207,83 @@ def test_negative_exit_is_classified_as_crash(adapter_type):
     assert adapter_type().classify_error("", -9) is ErrorType.CRASH
 
 
-def test_installation_check_uses_path_lookup(monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda executable: f"C:/bin/{executable}.exe")
+def test_installation_check_uses_path_lookup(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda executable: str(tmp_path / f"{executable}.exe"),
+    )
 
-    assert ClaudeAdapter().is_installed()
-    assert CodexAdapter().is_installed()
+    claude = ClaudeAdapter()
+    codex = CodexAdapter()
+
+    assert claude.is_installed()
+    assert codex.is_installed()
+    assert claude.build_command(make_task())[0] == str((tmp_path / "claude.exe").resolve())
+    assert codex.build_command(make_task())[0] == str((tmp_path / "codex.exe").resolve())
+
+
+def test_explicit_executable_wins_and_expands_environment(monkeypatch, tmp_path):
+    executable = tmp_path / "custom-codex.exe"
+    executable.touch()
+    monkeypatch.setenv("AQR_TEST_EXECUTABLE", str(executable))
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda _name: pytest.fail("PATH lookup must not override an explicit executable"),
+    )
+
+    adapter = CodexAdapter(AgentSection(executable="$AQR_TEST_EXECUTABLE"))
+
+    assert adapter.is_installed()
+    assert adapter.build_command(make_task())[0] == str(executable.resolve())
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "environment", "relative_path"),
+    [
+        (ClaudeAdapter, "USERPROFILE", Path(".local/bin/claude.exe")),
+        (
+            CodexAdapter,
+            "LOCALAPPDATA",
+            Path("Programs/OpenAI/Codex/bin/codex.exe"),
+        ),
+    ],
+)
+def test_known_install_location_is_probed(
+    adapter_type,
+    environment,
+    relative_path,
+    monkeypatch,
+    tmp_path,
+):
+    executable = tmp_path / relative_path
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    monkeypatch.setenv(environment, str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    adapter = adapter_type()
+
+    assert adapter.is_installed()
+    assert adapter.build_command(make_task())[0] == str(executable.resolve())
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "environment"),
+    [(ClaudeAdapter, "USERPROFILE"), (CodexAdapter, "LOCALAPPDATA")],
+)
+def test_unresolved_executable_keeps_bare_name(
+    adapter_type,
+    environment,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv(environment, str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    adapter = adapter_type()
+
+    assert adapter.is_installed() is False
+    assert adapter.build_command(make_task())[0] == adapter.name.value
 
 
 @pytest.mark.parametrize("adapter_type", [ClaudeAdapter, CodexAdapter])
@@ -226,10 +302,12 @@ def test_version_check_is_bounded_and_shell_free(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    assert ClaudeAdapter().get_version() == "tool 1.2.3"
+    adapter = ClaudeAdapter()
+
+    assert adapter.get_version() == "tool 1.2.3"
     assert calls == [
         (
-            ["claude", "--version"],
+            [adapter.build_command(make_task())[0], "--version"],
             {
                 "capture_output": True,
                 "check": False,
