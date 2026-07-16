@@ -113,6 +113,19 @@ async def test_success_persists_run_logs_and_releases_agent(
     assert state.current_task_id is None
 
 
+async def test_success_stores_summary_from_optional_adapter_hook(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("print('summary source')")
+    adapter.summarize_output = lambda output: f"summary: {output.strip()}"
+
+    _task, run = await execute_reserved(session, config, project_path, adapter)
+
+    assert run.result_summary == "summary: summary source"
+
+
 async def test_success_clears_previous_task_and_agent_errors(
     session,
     config: AppConfig,

@@ -25,7 +25,14 @@ class AgentAdapter(Protocol):
 
     def build_stdin(self, task: Task) -> str | None: ...
 
+    def summarize_output(self, output: str) -> str | None: ...
+
     def classify_error(self, output: str, exit_code: int | None) -> ErrorType: ...
+
+
+def summarize_output(_output: str) -> str | None:
+    """Default summary hook for adapters that do not expose one."""
+    return None
 
 
 def executable_is_installed(executable: str) -> bool:

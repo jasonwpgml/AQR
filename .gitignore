@@ -9,3 +9,4 @@ build/
 ai-queue-runner/logs/
 ai-queue-runner/data/
 ai-queue-runner/.omx/
+ai-queue-runner/config.toml
