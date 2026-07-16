@@ -116,6 +116,16 @@ class RunView:
     error_type: ErrorType | None
 
 
+@dataclass(frozen=True)
+class CalendarActivityView:
+    id: int
+    title: str
+    status: TaskStatus
+    created_at: datetime
+    finished_at: datetime | None
+    not_before: datetime | None
+
+
 class TaskService:
     """One-session-per-operation facade for desktop and runtime callers."""
 
@@ -138,6 +148,26 @@ class TaskService:
         with self._session_factory() as session:
             task = TaskRepository(session).get(task_id)
             return None if task is None else _to_task_view(task)
+
+    def activity_between(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> list[CalendarActivityView]:
+        if start_utc.tzinfo is not None or end_utc.tzinfo is not None:
+            raise ValueError("calendar boundaries must be naive UTC datetimes")
+        if start_utc >= end_utc:
+            raise ValueError("calendar start must be before end")
+        with self._session_factory() as session:
+            tasks = TaskRepository(session).list()
+            return [
+                _to_calendar_activity_view(task)
+                for task in tasks
+                if any(
+                    value is not None and start_utc <= value < end_utc
+                    for value in (task.created_at, task.finished_at, task.not_before)
+                )
+            ]
 
     def create(self, draft: TaskDraft) -> TaskView:
         canonical_path = self._canonical_project_path(draft.project_path)
@@ -344,6 +374,17 @@ def _to_task_view(task: Task) -> TaskView:
         tags=tuple(tag for tag in task.tags if tag != _ARCHIVED_TAG),
         dependency_ids=tuple(dependency.id for dependency in task.depends_on),
         archived=_is_archived(task),
+    )
+
+
+def _to_calendar_activity_view(task: Task) -> CalendarActivityView:
+    return CalendarActivityView(
+        id=task.id,
+        title=task.title,
+        status=task.status,
+        created_at=task.created_at,
+        finished_at=task.finished_at,
+        not_before=task.not_before,
     )
 
 

@@ -64,6 +64,7 @@ class TaskDialog(QDialog):
         *,
         config: AppConfig,
         prompt_template_service: object | None = None,
+        preset_not_before: datetime | None = None,
     ) -> None:
         super().__init__(parent)
         self._task = task
@@ -203,6 +204,11 @@ class TaskDialog(QDialog):
             self._load_task(task)
         else:
             self._refresh_project_roots()
+            if preset_not_before is not None:
+                self.not_before_check.setChecked(True)
+                self.not_before_edit.setDateTime(
+                    QDateTime(preset_not_before.astimezone())
+                )
         self.title_edit.setFocus()
 
     def showEvent(self, event: QShowEvent) -> None:

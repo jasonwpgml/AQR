@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QDate, Qt
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from ai_queue_runner.application.prompt_template_service import PromptTemplateService
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
@@ -32,6 +32,7 @@ from ai_queue_runner.infrastructure.database import (
     make_session_factory,
 )
 from ai_queue_runner.ui.approval_dialog import ApprovalDialog
+from ai_queue_runner.ui.calendar_view import CalendarView
 from ai_queue_runner.ui.log_viewer import LogViewer
 from ai_queue_runner.ui.main_window import MainWindow
 from ai_queue_runner.ui.settings_dialog import SettingsDialog
@@ -60,6 +61,8 @@ def make_task(task_id: int = 1, **overrides):
         "retry_count": 0,
         "retry_delay_minutes": 10,
         "not_before": None,
+        "created_at": utcnow(),
+        "finished_at": None,
         "tags": [],
         "dependency_ids": [],
         "last_error": None,
@@ -127,6 +130,29 @@ def test_task_dialog_validates_and_builds_draft_with_dependencies(app, tmp_path)
     assert draft.agent_policy is AgentPolicy.ANY
     assert draft.approval_mode is ApprovalMode.CONFIRM
     assert draft.dependency_ids == [2]
+
+
+def test_task_dialog_preset_not_before_is_saved_as_naive_utc(app, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    local_zone = datetime.now().astimezone().tzinfo
+    preset = datetime(2030, 4, 5, 9, tzinfo=local_zone)
+    config = make_config_with_roots(project)
+    dialog = TaskDialog(config=config, preset_not_before=preset)
+    dialog.title_edit.setText("날짜 지정 작업")
+    dialog.prompt_edit.setPlainText("선택한 날짜 오전 아홉 시부터 실행한다.")
+
+    engine = create_db_engine(tmp_path / "calendar.db")
+    init_db(engine)
+    service = TaskService(make_session_factory(engine), config)
+    created = service.create(dialog.build_draft())
+
+    assert dialog.not_before_check.isChecked()
+    shown = dialog.not_before_edit.dateTime().toPython()
+    assert (shown.year, shown.month, shown.day, shown.hour, shown.minute) == (2030, 4, 5, 9, 0)
+    assert created.not_before == preset.astimezone(UTC).replace(tzinfo=None)
+    dialog.close()
+    engine.dispose()
 
 
 def test_task_dialog_lists_live_configured_roots_on_open(app, tmp_path):
@@ -352,6 +378,20 @@ class FakeTaskService:
     def get(self, task_id):
         return next((task for task in self.tasks if task.id == task_id), None)
 
+    def activity_between(self, start_utc, end_utc):
+        return [
+            task
+            for task in self.tasks
+            if any(
+                value is not None and start_utc <= value < end_utc
+                for value in (
+                    getattr(task, "created_at", None),
+                    getattr(task, "finished_at", None),
+                    getattr(task, "not_before", None),
+                )
+            )
+        ]
+
     def list_runs(self, task_id):
         return []
 
@@ -405,6 +445,111 @@ class FakeRuntime:
 
     def shutdown(self):
         self.shutdown_calls += 1
+
+
+def test_calendar_marks_and_groups_activity_for_selected_local_date(app):
+    local_zone = datetime.now().astimezone().tzinfo
+    selected = datetime.now().astimezone().date()
+
+    def utc_at(hour):
+        return datetime(
+            selected.year,
+            selected.month,
+            selected.day,
+            hour,
+            tzinfo=local_zone,
+        ).astimezone(UTC).replace(tzinfo=None)
+
+    service = FakeTaskService(
+        [
+            make_task(
+                1,
+                title="완료된 작업",
+                status=TaskStatus.SUCCEEDED,
+                created_at=utc_at(1),
+                finished_at=utc_at(10),
+            ),
+            make_task(
+                2,
+                title="취소된 작업",
+                status=TaskStatus.CANCELLED,
+                created_at=utc_at(2),
+                finished_at=utc_at(11),
+            ),
+            make_task(3, title="예정 작업", created_at=utc_at(3), not_before=utc_at(9)),
+            make_task(4, title="생성된 작업", created_at=utc_at(4)),
+        ]
+    )
+    view = CalendarView(service)
+    view.calendar.setSelectedDate(QDate(selected.year, selected.month, selected.day))
+    view.refresh()
+
+    grouped = {
+        view.task_tree.topLevelItem(index).text(0).split(" (")[0]: [
+            view.task_tree.topLevelItem(index).child(row).text(0)
+            for row in range(view.task_tree.topLevelItem(index).childCount())
+        ]
+        for index in range(view.task_tree.topLevelItemCount())
+    }
+
+    assert selected in view.marked_dates
+    assert any("완료된 작업" in text for text in grouped["완료"])
+    assert any("취소된 작업" in text for text in grouped["실패·취소"])
+    assert any("예정 작업" in text for text in grouped["예정"])
+    assert any("생성된 작업" in text for text in grouped["생성"])
+    view.close()
+
+
+def test_calendar_add_flow_prefills_local_nine_and_focuses_main_table(
+    app, tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    task = make_task(project_path=str(project))
+    window = MainWindow(
+        FakeTaskService([task]),
+        FakeAgentService(),
+        FakeRuntime(),
+        adapters={},
+        config=make_config_with_roots(project),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+    real_task_dialog = TaskDialog
+    opened = []
+
+    def make_dialog(*args, **kwargs):
+        dialog = real_task_dialog(*args, **kwargs)
+        dialog.exec = lambda: QDialog.DialogCode.Rejected
+        opened.append(dialog)
+        return dialog
+
+    monkeypatch.setattr("ai_queue_runner.ui.main_window.TaskDialog", make_dialog)
+    selected = datetime.now().astimezone().date()
+    window.calendar_view.calendar.setSelectedDate(
+        QDate(selected.year, selected.month, selected.day)
+    )
+
+    window.calendar_view.add_button.click()
+
+    assert len(opened) == 1
+    shown = opened[0].not_before_edit.dateTime().toPython()
+    assert opened[0].not_before_check.isChecked()
+    assert (shown.year, shown.month, shown.day, shown.hour, shown.minute) == (
+        selected.year,
+        selected.month,
+        selected.day,
+        9,
+        0,
+    )
+
+    window.calendar_view.focus_task_requested.emit(task.id)
+    app.processEvents()
+    assert window.tabs.currentWidget() is window.queue_page
+    assert window.task_table.selectionModel().selectedRows()[0].row() == 0
+    opened[0].close()
+    window.close()
 
 
 def test_main_window_constructs_and_refreshes_from_services(app):

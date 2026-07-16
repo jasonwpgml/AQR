@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -93,6 +93,42 @@ def test_task_crud_returns_detached_immutable_dtos_and_dependencies(application)
     )
     assert updated.title == "updated"
     assert updated.priority == 95
+
+
+def test_activity_between_returns_tasks_with_events_inside_range(application) -> None:
+    tasks, _agents, factory, project = application
+    created_event = tasks.create(draft(project, title="created in range"))
+    finished_event = tasks.create(draft(project, title="finished in range"))
+    scheduled_event = tasks.create(draft(project, title="scheduled in range"))
+    outside = tasks.create(draft(project, title="outside range"))
+    start = datetime(2030, 1, 10)
+    end = datetime(2030, 1, 11)
+
+    with factory() as session:
+        repo = TaskRepository(session)
+        for task_id in (created_event.id, finished_event.id, scheduled_event.id, outside.id):
+            repo.get(task_id).created_at = datetime(2030, 1, 1)
+        repo.get(created_event.id).created_at = start + timedelta(hours=1)
+        repo.get(finished_event.id).finished_at = start + timedelta(hours=2)
+        repo.get(scheduled_event.id).not_before = start + timedelta(hours=3)
+        repo.get(outside.id).not_before = end
+        session.commit()
+
+    activities = tasks.activity_between(start, end)
+
+    assert [activity.id for activity in activities] == [
+        created_event.id,
+        finished_event.id,
+        scheduled_event.id,
+    ]
+    assert activities[0].created_at == start + timedelta(hours=1)
+    assert activities[1].finished_at == start + timedelta(hours=2)
+    assert activities[2].not_before == start + timedelta(hours=3)
+
+    with pytest.raises(ValueError, match="naive UTC"):
+        tasks.activity_between(start.astimezone(), end)
+    with pytest.raises(ValueError, match="before end"):
+        tasks.activity_between(end, start)
 
 
 def test_create_and_update_enforce_path_policy_and_waiting_only(application, tmp_path) -> None:
