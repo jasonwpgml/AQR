@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ai_queue_runner.config.defaults import AppConfig
-from ai_queue_runner.domain.enums import AgentName, AgentStatus, TaskStatus
+from ai_queue_runner.domain.enums import AgentName, AgentStatus, ApprovalMode, TaskStatus
 from ai_queue_runner.ui.agent_status_widget import AgentStatusWidget
 from ai_queue_runner.ui.approval_dialog import ApprovalDialog
 from ai_queue_runner.ui.calendar_view import CalendarView
@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self.prompt_template_service = prompt_template_service
         self._selected_task: object | None = None
         self._prompted_reservations: set[int] = set()
+        self._approval_dialog_open = False
 
         self.setWindowTitle("AI Queue Runner")
         self.resize(1100, 760)
@@ -400,6 +401,10 @@ class MainWindow(QMainWindow):
         except Exception:
             return
         self._notify_task_transitions(tasks)
+        # AIDEV-NOTE: dialog.exec() spins a nested event loop, so this poll re-enters
+        # while an approval dialog is open; without this guard a second dialog stacks.
+        if self._approval_dialog_open:
+            return
         reserved = {
             int(task.id): task
             for task in tasks
@@ -549,10 +554,22 @@ class MainWindow(QMainWindow):
         if self._selected_task is None:
             return
         task_id = self._selected_task.id
+        approval_mode = enum_value(getattr(self._selected_task, "approval_mode", ""))
         try:
             self.runtime.reserve_now(task_id)
         except Exception as exc:
             self._show_error("즉시 실행", exc)
+            return
+        self._prompted_reservations.add(task_id)
+        if approval_mode == ApprovalMode.AUTO.value:
+            # 사용자가 직접 실행을 눌렀고 작업도 auto 모드이므로 승인 창 없이 실행한다.
+            try:
+                self.runtime.approve(task_id)
+            except Exception as exc:
+                self._show_error("즉시 실행", exc)
+                return
+            self._notify("즉시 실행을 시작했습니다.")
+            self.refresh()
             return
         self.request_approval(task_id)
 
@@ -602,7 +619,9 @@ class MainWindow(QMainWindow):
             return
         try:
             if enum_value(getattr(task, "status", "")) == TaskStatus.RESERVED.value:
+                # 예약만 풀면 다시 대기열로 돌아가 재실행되므로 반드시 취소까지 진행한다.
                 self.runtime.reject(task.id)
+                self.task_service.cancel(task.id)
             else:
                 self.task_service.cancel(task.id)
         except Exception as exc:
@@ -678,6 +697,8 @@ class MainWindow(QMainWindow):
 
     def request_approval(self, task_id: int) -> bool:
         """Display a pending confirmation; callable by a runtime/UI polling bridge."""
+        # 호출 경로(폴링/즉시 실행)와 무관하게 같은 예약에 두 번 묻지 않도록 먼저 등록한다.
+        self._prompted_reservations.add(task_id)
         task = self._get_task(task_id)
         if task is None:
             self.statusBar().showMessage(f"승인할 작업 #{task_id}을 찾을 수 없습니다.")
@@ -687,16 +708,25 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("담당 AI 어댑터를 찾을 수 없습니다.")
             return False
         dialog = ApprovalDialog(task, adapter, parent=self)
-        approved = dialog.exec() == QDialog.DialogCode.Accepted
+        self._approval_dialog_open = True
+        try:
+            approved = dialog.exec() == QDialog.DialogCode.Accepted
+        finally:
+            self._approval_dialog_open = False
         try:
             if approved:
                 self.runtime.approve(task_id)
             else:
-                self.runtime.reject(task_id)
+                # 거부한 작업은 BLOCKED로 보내 스케줄러가 곧바로 재예약·재질문하지 않게 한다.
+                self.runtime.reject(task_id, block=True)
         except Exception as exc:
             self._show_error("실행 승인" if approved else "실행 거부", exc)
             return False
-        self._notify("실행을 승인했습니다." if approved else "실행을 거부했습니다.")
+        self._notify(
+            "실행을 승인했습니다."
+            if approved
+            else "실행을 거부했습니다. 작업은 '차단' 상태로 남습니다."
+        )
         self.refresh()
         return approved
 

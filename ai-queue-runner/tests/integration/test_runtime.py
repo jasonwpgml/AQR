@@ -76,6 +76,33 @@ def test_tick_leaves_confirmation_task_reserved_until_rejected(runtime_app) -> N
         runtime.shutdown()
 
 
+def test_blocking_reject_parks_task_and_prevents_immediate_rereservation(runtime_app) -> None:
+    factory, config, project = runtime_app
+    tasks = TaskService(factory, config)
+    agents = AgentService(factory)
+    agents.set_availability(AgentName.CLAUDE, AgentStatus.AVAILABLE, None)
+    task = tasks.create(task_draft(project, agent_policy=AgentPolicy.CLAUDE))
+    runtime = make_runtime(factory, config, {AgentName.CLAUDE: FakeAdapter()})
+    try:
+        assert runtime.tick_once() == (task.id,)
+
+        assert runtime.reject(task.id, block=True)
+        blocked = tasks.get(task.id)
+        assert blocked.status is TaskStatus.BLOCKED
+        assert blocked.assigned_agent is None
+        assert "거부" in blocked.last_error
+        claude = next(state for state in agents.list() if state.agent is AgentName.CLAUDE)
+        assert claude.current_task_id is None
+
+        # 차단된 작업은 다음 틱에서 다시 예약(=재승인 요청)되지 않는다.
+        assert runtime.tick_once() == ()
+
+        retried = tasks.retry(task.id)
+        assert retried.status is TaskStatus.WAITING
+    finally:
+        runtime.shutdown()
+
+
 def test_approve_executes_reserved_task_on_background_loop(runtime_app) -> None:
     factory, config, project = runtime_app
     tasks = TaskService(factory, config)
