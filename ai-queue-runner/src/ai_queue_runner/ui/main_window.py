@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QTableView,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -31,6 +32,7 @@ from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.enums import AgentName, AgentStatus, TaskStatus
 from ai_queue_runner.ui.agent_status_widget import AgentStatusWidget
 from ai_queue_runner.ui.approval_dialog import ApprovalDialog
+from ai_queue_runner.ui.calendar_view import CalendarView
 from ai_queue_runner.ui.log_viewer import LogViewer
 from ai_queue_runner.ui.settings_dialog import SettingsDialog
 from ai_queue_runner.ui.task_dialog import TaskDialog
@@ -195,14 +197,27 @@ class MainWindow(QMainWindow):
         scheduler_controls.addWidget(self.status_filter)
         scheduler_controls.addWidget(self.refresh_button)
 
+        self.queue_page = QWidget()
+        queue_layout = QVBoxLayout(self.queue_page)
+        queue_layout.setContentsMargins(8, 8, 8, 8)
+        queue_layout.setSpacing(8)
+        queue_layout.addLayout(task_controls)
+        queue_layout.addLayout(scheduler_controls)
+        queue_layout.addWidget(content_splitter, 1)
+
+        self.calendar_view = CalendarView(self.task_service)
+        self.calendar_view.focus_task_requested.connect(self._focus_task_from_calendar)
+        self.calendar_view.add_task_requested.connect(self._add_task_on_date)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.queue_page, "작업 목록")
+        self.tabs.addTab(self.calendar_view, "달력")
+
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         layout.addLayout(agent_row)
-        layout.addLayout(task_controls)
-        layout.addLayout(scheduler_controls)
-        layout.addWidget(content_splitter, 1)
+        layout.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
         self.statusBar().showMessage("준비")
 
@@ -258,6 +273,7 @@ class MainWindow(QMainWindow):
                 resolvable=resolvable,
             )
         self._restore_selection(selected_id)
+        self.calendar_view.refresh()
         running = bool(getattr(self.runtime, "running", False))
         paused = bool(getattr(self.runtime, "paused", not running))
         self.start_button.setEnabled(not running or paused)
@@ -458,11 +474,21 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"설정을 저장했습니다: {self.active_config_path}", 5000)
 
     def add_task(self) -> None:
+        self._open_add_task_dialog()
+
+    def _add_task_on_date(self, preset_not_before: datetime) -> None:
+        self._open_add_task_dialog(preset_not_before)
+
+    def _open_add_task_dialog(
+        self,
+        preset_not_before: datetime | None = None,
+    ) -> None:
         dialog = TaskDialog(
             available_tasks=self._list_tasks(),
             parent=self,
             config=self.config,
             prompt_template_service=self.prompt_template_service,
+            preset_not_before=preset_not_before,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -473,6 +499,25 @@ class MainWindow(QMainWindow):
             return
         self._notify("작업을 추가했습니다.")
         self.refresh()
+
+    def _focus_task_from_calendar(self, task_id: int) -> None:
+        try:
+            task = self._get_task(task_id)
+        except Exception as exc:
+            self._show_error("작업 찾기", exc)
+            return
+        if task is None:
+            self.statusBar().showMessage(f"작업 #{task_id}을 찾을 수 없습니다.")
+            return
+        self.status_filter.setCurrentIndex(9 if getattr(task, "archived", False) else 0)
+        self.refresh()
+        for row, listed_task in enumerate(self.task_model.tasks):
+            if getattr(listed_task, "id", None) == task_id:
+                self.task_table.selectRow(row)
+                self.task_table.scrollTo(self.task_model.index(row, 0))
+                self.tabs.setCurrentWidget(self.queue_page)
+                return
+        self.statusBar().showMessage(f"작업 #{task_id}을 현재 목록에서 찾을 수 없습니다.")
 
     def edit_task(self) -> None:
         if self._selected_task is None:
