@@ -10,8 +10,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
+from ai_queue_runner.application.prompt_template_service import PromptTemplateService
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.config.exporter import export_config
@@ -95,6 +96,57 @@ def test_task_dialog_validates_and_builds_draft_with_dependencies(app):
     assert draft.agent_policy is AgentPolicy.ANY
     assert draft.approval_mode is ApprovalMode.CONFIRM
     assert draft.dependency_ids == [2]
+
+
+def test_task_dialog_saves_selects_and_deletes_prompt_templates(app, tmp_path, monkeypatch):
+    engine = create_db_engine(tmp_path / "queue.db")
+    init_db(engine)
+    service = PromptTemplateService(make_session_factory(engine))
+    service.save("Existing", "Original prompt")
+    service.save("Other", "Other prompt")
+    dialog = TaskDialog(prompt_template_service=service)
+
+    existing_index = dialog.template_combo.findData("Existing")
+    dialog.template_combo.setCurrentIndex(existing_index)
+    assert dialog.prompt_edit.toPlainText() == "Original prompt"
+
+    requested_defaults = []
+
+    def template_name_input(*args):
+        requested_defaults.append(args[4])
+        return "Existing", True
+
+    monkeypatch.setattr(
+        "ai_queue_runner.ui.task_dialog.QInputDialog.getText",
+        template_name_input,
+    )
+    dialog.prompt_edit.setPlainText("Updated prompt")
+    dialog.save_template_button.click()
+
+    assert requested_defaults == ["Existing"]
+    assert service.list()[0].prompt == "Updated prompt"
+    assert dialog.template_combo.findData("Existing") >= 0
+
+    confirmations = []
+
+    def confirm(*args):
+        confirmations.append(args[2])
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr("ai_queue_runner.ui.task_dialog.QMessageBox.question", confirm)
+    dialog.prompt_edit.setPlainText("Unsaved editor text")
+    dialog.template_combo.setCurrentIndex(dialog.template_combo.findData("Other"))
+
+    assert dialog.prompt_edit.toPlainText() == "Other prompt"
+    assert confirmations == ["현재 프롬프트를 선택한 템플릿 내용으로 바꾸시겠습니까?"]
+
+    dialog.delete_template_button.click()
+
+    assert dialog.template_combo.findData("Other") == -1
+    assert [template.name for template in service.list()] == ["Existing"]
+    assert confirmations[-1] == "'Other' 템플릿을 삭제하시겠습니까?"
+    dialog.close()
+    engine.dispose()
 
 
 def test_approval_dialog_shows_exact_execution_inputs(app):

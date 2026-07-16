@@ -22,3 +22,4 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T017 UX: human-readable log rendering + result summaries
 [done] T018 UX: allowed-roots settings dialog with live apply
 [done] T019 auto usage-limit reset detection (Claude exact, Codex best-effort)
+[done] T020 prompt templates (settings-backed, task dialog integration)

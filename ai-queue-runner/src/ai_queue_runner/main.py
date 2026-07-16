@@ -131,6 +131,7 @@ def run_desktop_app(
     from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
     from ai_queue_runner.application.agent_service import AgentService
+    from ai_queue_runner.application.prompt_template_service import PromptTemplateService
     from ai_queue_runner.application.runtime import QueueRuntime
     from ai_queue_runner.application.task_service import TaskService
     from ai_queue_runner.infrastructure.adapters import ClaudeAdapter, CodexAdapter
@@ -152,6 +153,7 @@ def run_desktop_app(
         "codex": CodexAdapter(config.agents["codex"]),
     }
     task_service = TaskService(session_factory, config)
+    prompt_template_service = PromptTemplateService(session_factory)
     agent_service = AgentService(session_factory)
     runtime = QueueRuntime(session_factory, config, adapters)
 
@@ -167,6 +169,7 @@ def run_desktop_app(
         adapters,
         config=config,
         active_config_path=active_config_path,
+        prompt_template_service=prompt_template_service,
         create_tray=tray_available,
     )
     _offer_startup_recovery(window, session_factory)

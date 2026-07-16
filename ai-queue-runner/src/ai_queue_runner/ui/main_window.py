@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         *,
         config: AppConfig,
         active_config_path: Path,
+        prompt_template_service: object | None = None,
         create_tray: bool = True,
     ) -> None:
         super().__init__(parent)
@@ -59,6 +60,7 @@ class MainWindow(QMainWindow):
         self.adapters = adapters
         self.config = config
         self.active_config_path = active_config_path
+        self.prompt_template_service = prompt_template_service
         self._selected_task: object | None = None
         self._prompted_reservations: set[int] = set()
 
@@ -433,7 +435,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"설정을 저장했습니다: {self.active_config_path}", 5000)
 
     def add_task(self) -> None:
-        dialog = TaskDialog(available_tasks=self._list_tasks(), parent=self)
+        dialog = TaskDialog(
+            available_tasks=self._list_tasks(),
+            parent=self,
+            prompt_template_service=self.prompt_template_service,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -451,6 +457,7 @@ class MainWindow(QMainWindow):
             self._selected_task,
             available_tasks=self._list_tasks(),
             parent=self,
+            prompt_template_service=self.prompt_template_service,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
