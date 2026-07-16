@@ -54,3 +54,28 @@ def release_stale_reservations(
     )
     session.commit()
     return stale
+
+
+def promote_retry_tasks(
+    session: Session,
+    now: datetime | None = None,
+) -> list[Task]:
+    """Promote due retry tasks back to the schedulable waiting state."""
+    now = utcnow() if now is None else now
+    retry_tasks = list(
+        session.scalars(
+            select(Task).where(
+                Task.status == TaskStatus.RETRY_WAIT,
+                (Task.not_before.is_(None) | (Task.not_before <= now)),
+            )
+        )
+    )
+    if not retry_tasks:
+        session.rollback()
+        return []
+
+    repo = TaskRepository(session)
+    for task in retry_tasks:
+        repo.set_status(task, TaskStatus.WAITING)
+    session.commit()
+    return retry_tasks

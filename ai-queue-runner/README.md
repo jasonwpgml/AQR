@@ -29,7 +29,7 @@ Claude/Codex CLI에 맡길 작업을 미리 등록해두면, 각 AI의 사용 �
 - [x] Phase 0 — 프로젝트 초기화 (config loader, logging, pytest, ruff)
 - [x] Phase 1 — 도메인 모델과 DB (enum, 상태 전이, ORM 5개 테이블, repository)
 - [x] Phase 2 — 스케줄러 코어 (후보 필터·점수·원자적 선점·예약 타임아웃 복구)
-- [ ] Phase 3 — 실행 엔진과 FakeAdapter
+- [ ] Phase 3 — 실행 엔진과 FakeAdapter (실행·재시도·제한 처리 완료, PID 크래시 복구 남음)
 - [ ] Phase 4 — Claude/Codex CLI 어댑터
 - [ ] Phase 5 — 데스크톱 UI (PySide6)
 - [ ] Phase 6 — 안정화 및 배포

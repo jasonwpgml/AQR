@@ -15,8 +15,8 @@ flowchart TB
 
     subgraph APP["application/ — 서비스 (Phase 2~3)"]
         SCHED[scheduler_service.py<br/>후보 필터 → 점수 → 원자적 선점]
-        EXEC[execution_service<br/>CLI 실행 · 재시도]
-        RECOV[recovery_service.py<br/>예약 타임아웃 해제<br/>비정상 종료 복구는 Phase 3]
+        EXEC[execution_service.py<br/>실행·6가지 결과 처리<br/>성공·재시도·제한·타임아웃·취소]
+        RECOV[recovery_service.py<br/>예약 타임아웃 해제 · 재시도 승격<br/>PID 크래시 복구는 T009b]
     end
 
     subgraph DOMAIN["domain/ — 모델·순수 규칙 (구현됨)"]
@@ -169,7 +169,8 @@ UPDATE는 경쟁 시 한쪽만 성공하므로 같은 `any` 작업이 두 AI에 
 | `config/loader.py` | TOML 로드 + 검증 | ✅ Phase 0 |
 | `infrastructure/logging_config.py` | 콘솔 + 회전 파일 로그 | ✅ Phase 0 |
 | `application/scheduler_service.py` | 후보 필터·점수·동점 처리 + CAS 원자적 선점 | ✅ Phase 2 |
-| `application/recovery_service.py` | 예약 타임아웃 해제 (waiting 복귀) | ✅ Phase 2 |
-| `application/execution_service.py` | CLI 실행·재시도·비정상 종료 복구 | ⬜ Phase 3 |
+| `application/recovery_service.py` | 예약 타임아웃 해제 + retry_wait→waiting 승격 | ✅ Phase 2~3 |
+| `application/execution_service.py` | 예약된 작업 실행, 성공/실패/재시도/제한/취소 처리 | ✅ Phase 3 |
+| `infrastructure/adapters/base.py` | AgentAdapter 프로토콜 (명령 생성 + 오류 분류) | ✅ Phase 3 |
 | `infrastructure/adapters/` | Claude/Codex CLI 어댑터 | ⬜ Phase 4 |
 | `ui/` | PySide6 창·트레이 | ⬜ Phase 5 |

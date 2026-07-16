@@ -10,7 +10,8 @@ Phases are defined in ../AI_QUEUE_RUNNER_PLAN.md §14.
 [done] T006 Phase 2: atomic reservation via CAS updates + 10-round concurrency test (plan §5.4)
 [done] T007 Phase 2: reserved-timeout recovery (recovery_service.release_stale_reservations)
 [done] T008 Phase 3: ProcessRunner (asyncio subprocess, cancel, timeout, log capture)
-[todo] T009 Phase 3: FakeAdapter + full success/fail/retry flow + crash recovery
+[done] T009 Phase 3: FakeAdapter + full success/fail/retry flow + crash recovery
+[todo] T009b Phase 3: PID-based crash recovery for `running` tasks found at startup (plan §8.5)
 [todo] T010 Phase 4: inspect installed claude/codex CLI --help; finalize command formats
 [todo] T011 Phase 4: Claude adapter (run, stream output, classify limit/auth errors)
 [todo] T012 Phase 4: Codex adapter (same responsibilities)

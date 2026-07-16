@@ -53,6 +53,7 @@ class SchedulerSection(StrictModel):
 
 class AgentSection(StrictModel):
     enabled: bool = True
+    run_timeout_minutes: int = Field(default=120, ge=1)
     limit_patterns: list[str] = Field(default_factory=lambda: list(DEFAULT_LIMIT_PATTERNS))
 
 
