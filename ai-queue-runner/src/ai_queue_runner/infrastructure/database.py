@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -26,7 +26,33 @@ def _migrate_v1_to_v2(session: Session) -> None:
         )
 
 
-_MIGRATIONS = {1: _migrate_v1_to_v2}
+def _migrate_v2_to_v3(session: Session) -> None:
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "fallback_agent" not in task_columns:
+        session.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN fallback_agent VARCHAR(6) "
+                "CHECK (fallback_agent IN ('claude', 'codex'))"
+            )
+        )
+
+    run_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(task_runs)")).mappings()
+    }
+    if "fallback_to_agent" not in run_columns:
+        session.execute(
+            text(
+                "ALTER TABLE task_runs ADD COLUMN fallback_to_agent VARCHAR(6) "
+                "CHECK (fallback_to_agent IN ('claude', 'codex'))"
+            )
+        )
+
+
+_MIGRATIONS = {1: _migrate_v1_to_v2, 2: _migrate_v2_to_v3}
 
 
 def create_db_engine(db_path: Path | str) -> Engine:

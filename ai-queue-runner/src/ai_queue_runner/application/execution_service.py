@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -10,7 +11,13 @@ from sqlalchemy.orm import Session
 
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
-from ai_queue_runner.domain.enums import AgentStatus, ErrorType, TaskStatus
+from ai_queue_runner.domain.enums import (
+    AgentName,
+    AgentPolicy,
+    AgentStatus,
+    ErrorType,
+    TaskStatus,
+)
 from ai_queue_runner.domain.models import Task, TaskRun
 from ai_queue_runner.infrastructure.adapters.base import (
     AgentAdapter,
@@ -32,6 +39,10 @@ from ai_queue_runner.infrastructure.repositories import (
 
 _OUTPUT_TAIL_BYTES = 4096
 _SUMMARY_TAIL_BYTES = 64 * 1024
+_RETRYABLE_FALLBACK_ERRORS = frozenset(
+    {ErrorType.CRASH, ErrorType.TIMEOUT, ErrorType.UNKNOWN}
+)
+logger = logging.getLogger(__name__)
 
 
 class ExecutionService:
@@ -73,7 +84,8 @@ class ExecutionService:
         task_repo.set_status(task, TaskStatus.RUNNING)
         task.started_at = started_at
         agent_state.status = AgentStatus.BUSY
-        run = TaskRunRepository(session).add(
+        run_repo = TaskRunRepository(session)
+        run = run_repo.add(
             TaskRun(
                 task_id=task.id,
                 agent=adapter.name,
@@ -114,13 +126,21 @@ class ExecutionService:
             raise
         except OSError as exc:
             _populate_result_summary(run, adapter, stdout_path)
-            self._record_spawn_failure(task_repo, task, run, agent_state, exc)
+            self._record_spawn_failure(
+                task_repo,
+                run_repo,
+                task,
+                run,
+                agent_state,
+                exc,
+            )
             session.commit()
             return run
 
         _populate_result_summary(run, adapter, stdout_path)
         self._record_result(
             task_repo,
+            run_repo,
             task,
             run,
             agent_state,
@@ -167,6 +187,7 @@ class ExecutionService:
     def _record_result(
         self,
         task_repo: TaskRepository,
+        run_repo: TaskRunRepository,
         task: Task,
         run: TaskRun,
         agent_state,
@@ -194,6 +215,7 @@ class ExecutionService:
             task_repo.set_status(task, TaskStatus.SUCCEEDED)
             task.finished_at = result.finished_at
             task.last_error = None
+            task.fallback_agent = None
             agent_state.status = AgentStatus.AVAILABLE
             agent_state.current_task_id = None
             agent_state.available_at = None
@@ -219,11 +241,16 @@ class ExecutionService:
                 f"{available_at.isoformat(sep=' ', timespec='seconds')} UTC"
             )
             run.error_type = ErrorType.USAGE_LIMIT
+            fallback_note = self._record_fallback(
+                task,
+                run,
+                reason="usage limit",
+            )
             task_repo.set_status(task, TaskStatus.WAITING)
             task.assigned_agent = None
             task.reserved_at = None
             task.started_at = None
-            task.last_error = f"{output_tail}\n{reset_note}" if output_tail else reset_note
+            task.last_error = _join_notes(output_tail, reset_note, fallback_note)
             agent_state.status = AgentStatus.COOLDOWN
             agent_state.available_at = available_at
             agent_state.current_task_id = None
@@ -248,6 +275,7 @@ class ExecutionService:
         error_message = output_tail or _default_failure_message(result)
         self._record_failure(
             task_repo,
+            run_repo,
             task,
             run,
             agent_state,
@@ -256,9 +284,10 @@ class ExecutionService:
             result.finished_at,
         )
 
-    @staticmethod
     def _record_spawn_failure(
+        self,
         task_repo: TaskRepository,
+        run_repo: TaskRunRepository,
         task: Task,
         run: TaskRun,
         agent_state,
@@ -269,8 +298,9 @@ class ExecutionService:
         run.pid = None
         run.exit_code = None
         run.finished_at = finished_at
-        ExecutionService._record_failure(
+        self._record_failure(
             task_repo,
+            run_repo,
             task,
             run,
             agent_state,
@@ -300,9 +330,10 @@ class ExecutionService:
         agent_state.status = AgentStatus.AVAILABLE
         agent_state.current_task_id = None
 
-    @staticmethod
     def _record_failure(
+        self,
         task_repo: TaskRepository,
+        run_repo: TaskRunRepository,
         task: Task,
         run: TaskRun,
         agent_state,
@@ -312,15 +343,66 @@ class ExecutionService:
     ) -> None:
         run.error_type = error_type
         task.retry_count += 1
+        fallback_note = None
         if task.retry_count <= task.max_retries:
             task_repo.set_status(task, TaskStatus.RETRY_WAIT)
             task.not_before = utcnow() + timedelta(minutes=task.retry_delay_minutes)
+            if (
+                error_type in _RETRYABLE_FALLBACK_ERRORS
+                and self._consecutive_failures(run_repo, task.id, run.agent)
+                >= self._config.scheduler.fallback_failure_threshold
+            ):
+                fallback_note = self._record_fallback(
+                    task,
+                    run,
+                    reason=(
+                        f"{self._config.scheduler.fallback_failure_threshold} "
+                        "consecutive failures"
+                    ),
+                )
         else:
             task_repo.set_status(task, TaskStatus.FAILED)
-        task.last_error = error_message
+        task.last_error = _join_notes(error_message, fallback_note)
         task.finished_at = finished_at
         agent_state.status = AgentStatus.AVAILABLE
         agent_state.current_task_id = None
+
+    def _record_fallback(
+        self,
+        task: Task,
+        run: TaskRun,
+        *,
+        reason: str,
+    ) -> str | None:
+        if (
+            not self._config.scheduler.fallback_enabled
+            or task.agent_policy is not AgentPolicy.ANY
+        ):
+            return None
+        fallback_agent = (
+            AgentName.CODEX if run.agent is AgentName.CLAUDE else AgentName.CLAUDE
+        )
+        task.fallback_agent = fallback_agent
+        run.fallback_to_agent = fallback_agent
+        note = f"fallback scheduled: {run.agent.value} -> {fallback_agent.value} ({reason})"
+        logger.info("task %s %s", task.id, note)
+        return note
+
+    @staticmethod
+    def _consecutive_failures(
+        run_repo: TaskRunRepository,
+        task_id: int,
+        agent: AgentName,
+    ) -> int:
+        count = 0
+        for previous in reversed(run_repo.list_for_task(task_id)):
+            if (
+                previous.agent is not agent
+                or previous.error_type not in _RETRYABLE_FALLBACK_ERRORS
+            ):
+                break
+            count += 1
+        return count
 
 
 def _read_output_tail(
@@ -370,6 +452,10 @@ def _extract_limit_reset(adapter: AgentAdapter, output: str) -> datetime | None:
 def _matches_usage_limit(output: str, patterns: list[str]) -> bool:
     folded = output.casefold()
     return any(pattern.casefold() in folded for pattern in patterns)
+
+
+def _join_notes(*parts: str | None) -> str:
+    return "\n".join(part for part in parts if part)
 
 
 def _default_failure_message(result: ProcessRunResult) -> str:

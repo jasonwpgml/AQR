@@ -35,7 +35,7 @@
 |---|---|---|
 | `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--tag`, `--depends-on` |
 | `list-tasks` | 목록 조회 | `--status {waiting,reserved,running,succeeded,failed,retry_wait,blocked,cancelled,archived}` |
-| `show-task ID` | 상세 + 최근 5회 실행 | |
+| `show-task ID` | 상세 + 최근 5회 실행 | `fallback_agent`, `recent_runs[].fallback_to_agent`로 전환 확인 |
 | `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run` |
 | `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
 | `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`로 전환, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
@@ -99,11 +99,26 @@ failed|blocked → waiting (retry-task)   waiting|retry_wait|blocked → cancell
 
 1. 작업을 `waiting`으로 되돌리고 (재시도 횟수 소모 없음)
 2. 해당 에이전트를 `cooldown`으로 전환한다 — Claude는 응답의 정확한 리셋 시각, 실패 시 `default_cooldown_minutes`
-3. 리셋 시각이 지나면 스케줄러 틱이 에이전트를 자동 복귀시키고 작업을 다시 예약·실행한다
+3. 작업이 `any`이면 사용 가능한 반대 AI를 다음 틱에서 우선 예약한다
+4. 둘 다 제한 상태이면 리셋 시각이 지난 AI부터 자동 복귀해 작업을 다시 예약·실행한다
 
 즉 **앱과 스케줄러만 켜져 있으면 토큰 리셋을 기다렸다가 알아서 재개한다.**
 재실행은 같은 프롬프트로 새 CLI 세션을 시작하므로, 프롬프트는 "현재 저장소 상태를
 확인하고 이어서 진행"하도록 멱등하게 쓰는 것이 안전하다.
+
+## Any 작업 자동 fallback
+
+`[scheduler] fallback_enabled = true`(기본값)이면 `any` 작업은 한 AI에서 재시도 가능한
+일반 실패가 `fallback_failure_threshold`회 연속 발생한 뒤 반대 AI를 우선합니다. 기본
+임계값은 1회입니다. 전용 `claude`/`codex` 작업에는 적용되지 않습니다.
+
+- 사용량 제한은 임계값과 관계없이 즉시 반대 AI를 우선하며 `retry_count`를 소모하지 않습니다.
+- 반대 AI가 사용 가능하면 이전 AI는 그 작업을 후보로 선택하지 않습니다.
+- 반대 AI가 쿨다운·비활성·미설치이면 사용 가능한 기존 AI가 다시 실행할 수 있어 큐가 고정되지 않습니다.
+- 같은 DB 상태에서는 항상 같은 후보 필터와 기존 점수/동점 규칙을 사용합니다.
+- `show-task ID --json`의 `fallback_agent`는 현재 우선 AI이고,
+  `recent_runs[].agent -> fallback_to_agent`는 최근 전환 이력입니다.
+- 기존 동작으로 되돌리려면 `fallback_enabled = false`로 설정합니다.
 
 ## 권장 워크플로 예시
 

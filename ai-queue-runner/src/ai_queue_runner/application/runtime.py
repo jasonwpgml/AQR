@@ -128,12 +128,24 @@ class QueueRuntime:
                 release_stale_reservations(session, self._config, now)
 
             reserved_ids = []
+            eligible_agents = frozenset(
+                agent
+                for agent in AgentName
+                if (adapter := self._adapters.get(agent)) is not None
+                and adapter.is_installed()
+            )
             for agent in AgentName:
-                adapter = self._adapters.get(agent)
-                if adapter is None or not adapter.is_installed():
+                if agent not in eligible_agents:
                     continue
+                adapter = self._adapters[agent]
                 with self._session_factory() as session:
-                    task = reserve_next_task(session, self._config, agent, now)
+                    task = reserve_next_task(
+                        session,
+                        self._config,
+                        agent,
+                        now,
+                        eligible_agents=eligible_agents,
+                    )
                     if task is None:
                         continue
                     task_id = task.id
@@ -172,12 +184,26 @@ class QueueRuntime:
                 else (AgentName(task.agent_policy.value),)
             )
 
+        eligible_agents = frozenset(
+            agent
+            for agent in agents
+            if (adapter := self._adapters.get(agent)) is not None
+            and adapter.is_installed()
+        )
         for agent in agents:
-            adapter = self._adapters.get(agent)
-            if adapter is None or not adapter.is_installed():
+            if agent not in eligible_agents:
                 continue
             with self._session_factory() as session:
-                if reserve_specific_task(session, self._config, task_id, agent) is not None:
+                if (
+                    reserve_specific_task(
+                        session,
+                        self._config,
+                        task_id,
+                        agent,
+                        eligible_agents=eligible_agents,
+                    )
+                    is not None
+                ):
                     return True
         raise ValueError("no compatible available agent can reserve this task")
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import datetime
 
 from sqlalchemy import exists, select, update
@@ -35,6 +35,7 @@ def reserve_next_task(
     agent: AgentName,
     now: datetime | None = None,
     max_attempts: int = 3,
+    eligible_agents: Collection[AgentName] | None = None,
 ) -> Task | None:
     """Atomically pick and reserve the best task for ``agent`` (plan §5.4).
 
@@ -48,11 +49,26 @@ def reserve_next_task(
     for _ in range(max_attempts):
         try:
             now_ = utcnow() if now is None else now
-            state = AgentStateRepository(session).get_or_create(agent)
+            state_repo = AgentStateRepository(session)
+            states = {
+                candidate_agent: state_repo.get_or_create(candidate_agent)
+                for candidate_agent in AgentName
+            }
+            available_agents = scheduler.available_agents(
+                states,
+                now_,
+                eligible_agents=eligible_agents,
+            )
             tasks = session.scalars(
                 select(Task).where(Task.status.in_(_RESERVATION_SCOPE))
             ).all()
-            candidate = scheduler.select_task(tasks, agent, state, now_)
+            candidate = scheduler.select_task(
+                tasks,
+                agent,
+                states[agent],
+                now_,
+                available_agents=available_agents,
+            )
             if candidate is None:
                 session.rollback()
                 return None
@@ -70,11 +86,22 @@ def reserve_specific_task(
     task_id: int,
     agent: AgentName,
     now: datetime | None = None,
+    eligible_agents: Collection[AgentName] | None = None,
 ) -> Task | None:
     """Atomically reserve one user-selected task if it is eligible for ``agent``."""
     now = utcnow() if now is None else now
     try:
-        state = AgentStateRepository(session).get_or_create(agent)
+        scheduler = SchedulerService(config)
+        state_repo = AgentStateRepository(session)
+        states = {
+            candidate_agent: state_repo.get_or_create(candidate_agent)
+            for candidate_agent in AgentName
+        }
+        available_agents = scheduler.available_agents(
+            states,
+            now,
+            eligible_agents=eligible_agents,
+        )
         task = session.get(Task, task_id)
         if task is None:
             session.rollback()
@@ -85,11 +112,12 @@ def reserve_specific_task(
                 Task.id != task_id,
             )
         ).all()
-        candidate = SchedulerService(config).select_task(
+        candidate = scheduler.select_task(
             [task, *locking_tasks],
             agent,
-            state,
+            states[agent],
             now,
+            available_agents=available_agents,
         )
         if candidate is None or candidate.id != task_id:
             session.rollback()
@@ -155,11 +183,14 @@ class SchedulerService:
         agent: AgentName,
         state: AgentState | None,
         now: datetime | None = None,
+        *,
+        available_agents: Collection[AgentName] | None = None,
     ) -> Task | None:
         """Return the highest-ranked candidate, leaving reservation to the caller."""
         now = utcnow() if now is None else now
         if not self._agent_is_available(agent, state, now):
             return None
+        available_agents = {agent} if available_agents is None else set(available_agents)
 
         task_list = list(tasks)
         locked_projects = {
@@ -168,7 +199,13 @@ class SchedulerService:
         ranked: list[tuple[tuple[object, ...], Task]] = []
 
         for task in task_list:
-            if not self._is_candidate(task, agent, now, locked_projects):
+            if not self._is_candidate(
+                task,
+                agent,
+                now,
+                locked_projects,
+                available_agents,
+            ):
                 continue
             blocked_dependents_count = sum(
                 dependent.status not in UNBLOCKED_DEPENDENT_STATUSES
@@ -185,6 +222,20 @@ class SchedulerService:
                 ranked.append((self._rank_key(task, agent, now, score), task))
 
         return min(ranked, default=((), None), key=lambda item: item[0])[1]
+
+    def available_agents(
+        self,
+        states: dict[AgentName, AgentState],
+        now: datetime,
+        *,
+        eligible_agents: Collection[AgentName] | None = None,
+    ) -> frozenset[AgentName]:
+        eligible = set(AgentName) if eligible_agents is None else set(eligible_agents)
+        return frozenset(
+            agent
+            for agent, state in states.items()
+            if agent in eligible and self._agent_is_available(agent, state, now)
+        )
 
     def _agent_is_available(
         self,
@@ -203,12 +254,13 @@ class SchedulerService:
             and (state.available_at is None or state.available_at <= now)
         )
 
-    @staticmethod
     def _is_candidate(
+        self,
         task: Task,
         agent: AgentName,
         now: datetime,
         locked_projects: set[str],
+        available_agents: set[AgentName],
     ) -> bool:
         return bool(
             task.status is TaskStatus.WAITING
@@ -217,6 +269,26 @@ class SchedulerService:
             and task.retry_count <= task.max_retries
             and all(dependency.status is TaskStatus.SUCCEEDED for dependency in task.depends_on)
             and task.project_path not in locked_projects
+            and not self._fallback_is_preferred_elsewhere(
+                task,
+                agent,
+                available_agents,
+            )
+        )
+
+    def _fallback_is_preferred_elsewhere(
+        self,
+        task: Task,
+        agent: AgentName,
+        available_agents: set[AgentName],
+    ) -> bool:
+        fallback_agent = task.fallback_agent
+        return bool(
+            self._config.scheduler.fallback_enabled
+            and task.agent_policy is AgentPolicy.ANY
+            and fallback_agent is not None
+            and fallback_agent is not agent
+            and fallback_agent in available_agents
         )
 
     def _rank_key(

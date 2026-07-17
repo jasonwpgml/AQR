@@ -173,6 +173,142 @@ async def test_failure_with_retries_remaining_enters_retry_wait(
     assert run.error_type is ErrorType.UNKNOWN
 
 
+async def test_any_failure_prefers_other_agent_on_next_retry(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("import sys; sys.exit(7)")
+    task = reserve_task(
+        session,
+        config,
+        project_path,
+        adapter,
+        agent_policy="any",
+        max_retries=2,
+        retry_delay_minutes=0,
+    )
+    AgentStateRepository(session).get_or_create(AgentName.CODEX).status = (
+        AgentStatus.AVAILABLE
+    )
+    session.commit()
+
+    run = await ExecutionService(config, ProcessRunner()).execute(session, task, adapter)
+    promote_retry_tasks(session)
+
+    assert task.retry_count == 1
+    assert task.fallback_agent is AgentName.CODEX
+    assert run.fallback_to_agent is AgentName.CODEX
+    assert "claude -> codex" in task.last_error
+    assert reserve_next_task(session, config, AgentName.CLAUDE) is None
+    switched = reserve_next_task(session, config, AgentName.CODEX)
+    assert switched is not None and switched.id == task.id
+    assert switched.assigned_agent is AgentName.CODEX
+
+
+async def test_any_consecutive_failure_threshold_switches_agent(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    config.scheduler.fallback_failure_threshold = 2
+    adapter = python_adapter("import sys; sys.exit(8)")
+    task = reserve_task(
+        session,
+        config,
+        project_path,
+        adapter,
+        agent_policy="any",
+        max_retries=3,
+        retry_delay_minutes=0,
+    )
+    AgentStateRepository(session).get_or_create(AgentName.CODEX).status = (
+        AgentStatus.AVAILABLE
+    )
+    session.commit()
+
+    first_run = await ExecutionService(config, ProcessRunner()).execute(
+        session, task, adapter
+    )
+    promote_retry_tasks(session)
+
+    assert first_run.fallback_to_agent is None
+    assert task.fallback_agent is None
+    same_agent_retry = reserve_next_task(session, config, AgentName.CLAUDE)
+    assert same_agent_retry is not None and same_agent_retry.id == task.id
+
+    second_run = await ExecutionService(config, ProcessRunner()).execute(
+        session, same_agent_retry, adapter
+    )
+    promote_retry_tasks(session)
+
+    assert task.retry_count == 2
+    assert task.fallback_agent is AgentName.CODEX
+    assert second_run.fallback_to_agent is AgentName.CODEX
+    assert reserve_next_task(session, config, AgentName.CLAUDE) is None
+    switched = reserve_next_task(session, config, AgentName.CODEX)
+    assert switched is not None and switched.id == task.id
+
+
+async def test_dedicated_failure_never_switches_agent(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("import sys; sys.exit(9)")
+    task = reserve_task(
+        session,
+        config,
+        project_path,
+        adapter,
+        max_retries=2,
+        retry_delay_minutes=0,
+    )
+    AgentStateRepository(session).get_or_create(AgentName.CODEX).status = (
+        AgentStatus.AVAILABLE
+    )
+    session.commit()
+
+    run = await ExecutionService(config, ProcessRunner()).execute(session, task, adapter)
+    promote_retry_tasks(session)
+
+    assert task.fallback_agent is None
+    assert run.fallback_to_agent is None
+    assert reserve_next_task(session, config, AgentName.CODEX) is None
+    retried = reserve_next_task(session, config, AgentName.CLAUDE)
+    assert retried is not None and retried.id == task.id
+
+
+async def test_fallback_off_preserves_original_any_retry_selection(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    config.scheduler.fallback_enabled = False
+    adapter = python_adapter("import sys; sys.exit(10)")
+    task = reserve_task(
+        session,
+        config,
+        project_path,
+        adapter,
+        agent_policy="any",
+        max_retries=2,
+        retry_delay_minutes=0,
+    )
+    AgentStateRepository(session).get_or_create(AgentName.CODEX).status = (
+        AgentStatus.AVAILABLE
+    )
+    session.commit()
+
+    run = await ExecutionService(config, ProcessRunner()).execute(session, task, adapter)
+    promote_retry_tasks(session)
+
+    assert task.fallback_agent is None
+    assert run.fallback_to_agent is None
+    retried = reserve_next_task(session, config, AgentName.CLAUDE)
+    assert retried is not None and retried.id == task.id
+
+
 async def test_failure_without_retries_enters_failed(
     session,
     config: AppConfig,
@@ -245,6 +381,37 @@ async def test_usage_limit_returns_task_to_queue_and_cools_down_agent(
     assert earliest <= state.available_at <= latest
     assert state.current_task_id is None
     assert state.available_at.isoformat(sep=" ", timespec="seconds") in task.last_error
+
+
+async def test_any_usage_limit_switches_immediately_without_consuming_retry(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter(
+        "import sys; print('USAGE LIMIT reached', file=sys.stderr); sys.exit(1)"
+    )
+    task = reserve_task(
+        session,
+        config,
+        project_path,
+        adapter,
+        agent_policy="any",
+    )
+    AgentStateRepository(session).get_or_create(AgentName.CODEX).status = (
+        AgentStatus.AVAILABLE
+    )
+    session.commit()
+
+    run = await ExecutionService(config, ProcessRunner()).execute(session, task, adapter)
+
+    assert task.status is TaskStatus.WAITING
+    assert task.retry_count == 0
+    assert task.fallback_agent is AgentName.CODEX
+    assert run.fallback_to_agent is AgentName.CODEX
+    switched = reserve_next_task(session, config, AgentName.CODEX)
+    assert switched is not None and switched.id == task.id
+    assert switched.assigned_agent is AgentName.CODEX
 
 
 async def test_usage_limit_uses_exact_reset_extracted_from_output(

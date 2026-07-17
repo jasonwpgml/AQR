@@ -1,12 +1,12 @@
 ```yaml
 phase: 7
-current_goal: "plan status marker cleanup"
-active_task: "T028"
+current_goal: "automatic fallback for failed Any-policy tasks"
+active_task: "T029"
 owner: codex
 status: done
 blocked_by: null
 last_verified:
-  command: "git diff --stat"
-  result: "Markdown-only changes in ../AI_QUEUE_RUNNER_PLAN.md, .agent/STATE.md, .agent/TASKS.md, .agent/HANDOFF.md"
-next: "Claude review; commit when requested"
+  command: "..\\.venv\\Scripts\\python -m pytest -q && ..\\.venv\\Scripts\\python -m ruff check src tests"
+  result: "270 passed in 20.78s; All checks passed!"
+next: "Claude review; commit when approved"
 ```

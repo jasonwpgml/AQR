@@ -19,6 +19,12 @@ log_level = "INFO"   # DEBUG | INFO | WARNING | ERROR
 [scheduler]
 poll_interval_seconds = 30
 
+# Any-policy fallback: after this many consecutive retryable failures on one AI,
+# prefer the other available AI. Usage-limit failures switch immediately and do
+# not consume retry_count.
+fallback_enabled = true
+fallback_failure_threshold = 1
+
 # Scoring (plan §5.2)
 dedicated_agent_bonus = 20
 waiting_time_bonus_per_hour = 1.0

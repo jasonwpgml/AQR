@@ -82,6 +82,7 @@ class TaskView:
     project_path: str
     agent_policy: AgentPolicy
     assigned_agent: AgentName | None
+    fallback_agent: AgentName | None
     priority: int
     status: TaskStatus
     approval_mode: ApprovalMode
@@ -116,6 +117,7 @@ class RunView:
     finished_at: datetime | None
     result_summary: str | None
     error_type: ErrorType | None
+    fallback_to_agent: AgentName | None
 
 
 @dataclass(frozen=True)
@@ -212,6 +214,8 @@ class TaskService:
 
             for field, value in _task_values(draft, canonical_path).items():
                 setattr(task, field, value)
+            if draft.agent_policy is not AgentPolicy.ANY:
+                task.fallback_agent = None
             task.depends_on = dependencies
             task.updated_at = utcnow()
             session.commit()
@@ -259,6 +263,7 @@ class TaskService:
                 raise ValueError("only failed or blocked tasks can be retried")
             repo.set_status(task, TaskStatus.WAITING)
             task.assigned_agent = None
+            task.fallback_agent = None
             task.retry_count = 0
             task.not_before = None
             task.reserved_at = None
@@ -374,6 +379,7 @@ def _to_task_view(task: Task) -> TaskView:
         project_path=task.project_path,
         agent_policy=task.agent_policy,
         assigned_agent=task.assigned_agent,
+        fallback_agent=task.fallback_agent,
         priority=task.priority,
         status=task.status,
         approval_mode=task.approval_mode,
@@ -424,4 +430,5 @@ def _to_run_view(run: TaskRun) -> RunView:
         finished_at=run.finished_at,
         result_summary=run.result_summary,
         error_type=run.error_type,
+        fallback_to_agent=run.fallback_to_agent,
     )

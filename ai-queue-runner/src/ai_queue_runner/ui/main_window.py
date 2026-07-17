@@ -342,16 +342,27 @@ class MainWindow(QMainWindow):
             f"프로젝트: {getattr(task, 'project_path', '')}",
             f"재시도: {getattr(task, 'retry_count', 0)} / {getattr(task, 'max_retries', 0)}",
         ]
+        fallback_agent = getattr(task, "fallback_agent", None)
+        if fallback_agent is not None:
+            details.append(f"Fallback 우선 AI: {enum_value(fallback_agent)}")
         last_error = getattr(task, "last_error", None)
         if last_error:
             details.extend(("", "마지막 오류:", str(last_error)))
-        details.extend(("", "프롬프트:", str(getattr(task, "prompt", ""))))
-        self.details_view.setPlainText("\n".join(details))
         try:
             runs = list(self.task_service.list_runs(task.id))
         except Exception as exc:
             self.statusBar().showMessage(f"실행 기록 조회 실패: {exc}")
             runs = []
+        fallback_runs = [run for run in runs if getattr(run, "fallback_to_agent", None)]
+        if fallback_runs:
+            details.extend(("", "Fallback 이력:"))
+            details.extend(
+                f"- attempt {run.attempt}: {enum_value(run.agent)} → "
+                f"{enum_value(run.fallback_to_agent)} ({enum_value(run.error_type)})"
+                for run in fallback_runs[-5:]
+            )
+        details.extend(("", "프롬프트:", str(getattr(task, "prompt", ""))))
+        self.details_view.setPlainText("\n".join(details))
         self.log_viewer.set_run(runs[-1] if runs else None)
         self._update_action_state()
 

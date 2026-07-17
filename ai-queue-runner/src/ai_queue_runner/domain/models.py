@@ -78,6 +78,7 @@ class Task(Base):
     project_path: Mapped[str] = mapped_column(Text)
     agent_policy: Mapped[AgentPolicy] = mapped_column(_enum(AgentPolicy))
     assigned_agent: Mapped[AgentName | None] = mapped_column(_enum(AgentName), default=None)
+    fallback_agent: Mapped[AgentName | None] = mapped_column(_enum(AgentName), default=None)
     priority: Mapped[int] = mapped_column(default=50)
     estimated_tokens: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[TaskStatus] = mapped_column(_enum(TaskStatus), default=TaskStatus.WAITING)
@@ -154,6 +155,9 @@ class TaskRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(default=None)
     result_summary: Mapped[str | None] = mapped_column(Text, default=None)
     error_type: Mapped[ErrorType | None] = mapped_column(_enum(ErrorType), default=None)
+    fallback_to_agent: Mapped[AgentName | None] = mapped_column(
+        _enum(AgentName), default=None
+    )
 
     task: Mapped[Task] = relationship(back_populates="runs")
 

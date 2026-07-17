@@ -17,8 +17,8 @@ flowchart TB
         PLAN[WorkloadPlanning\n토큰 예산·결정적 분배]
         AGENT[AgentService]
         RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
-        SCHED[SchedulerService\n후보·점수·원자적 예약]
-        EXEC[ExecutionService\n실행 결과·재시도·제한 처리]
+        SCHED[SchedulerService\n후보·fallback 우선순위·원자적 예약]
+        EXEC[ExecutionService\n실행 결과·재시도·fallback 기록]
         RECOV[RecoveryService\n예약/PID/재시도 복구]
     end
 
@@ -70,6 +70,7 @@ erDiagram
         text project_path
         text agent_policy
         text assigned_agent
+        text fallback_agent
         int priority
         int estimated_tokens
         text status
@@ -103,6 +104,7 @@ erDiagram
         text stdout_path
         text stderr_path
         text error_type
+        text fallback_to_agent
     }
     settings {
         text key PK
@@ -116,7 +118,8 @@ erDiagram
 
 DB 시간은 SQLite의 제약 때문에 naive UTC로 저장하고 UI 경계에서만 로컬 시간으로 바꿉니다. enum은 읽을 수 있는 문자열 값으로 저장됩니다.
 스키마 v2는 기존 v1 DB의 `tasks`에 `estimated_tokens`를 기본값 0으로 추가하며,
-일반 작업의 0은 추정치 미지정을 뜻합니다.
+일반 작업의 0은 추정치 미지정을 뜻합니다. 스키마 v3는 `tasks.fallback_agent`와
+`task_runs.fallback_to_agent`를 추가해 현재 우선 대상과 에이전트 전환 이력을 보존합니다.
 
 ## 3. 작업 상태 전이
 
@@ -163,9 +166,19 @@ flowchart TD
     RUN --> RESULT{결과 분류}
     RESULT --> DONE[succeeded/failed/retry_wait/blocked]
     RESULT --> LIMIT[사용량 제한: agent cooldown + task waiting]
+    RESULT --> FALLBACK[Any 재시도: 반대 AI 우선 + 실행 기록]
+    FALLBACK --> FILTER
+    LIMIT --> FALLBACK
 ```
 
 예약은 `WHERE status='waiting'`, 동일 프로젝트의 `reserved/running` 행이 없다는 `NOT EXISTS`, `agent_states.current_task_id IS NULL` 조건을 둔 compare-and-swap UPDATE입니다. 두 에이전트가 같은 `any` 작업 또는 같은 프로젝트의 서로 다른 작업을 동시에 선택해도 한쪽만 성공합니다. `current_task_id`는 실행 시작이 아니라 예약 시점에 잡아 한 에이전트가 둘 이상의 작업을 보유하지 못하게 합니다.
+
+`any` 작업의 재시도 가능 실패가 설정 임계값(기본 1회)에 도달하면 `ExecutionService`가
+반대 AI를 `fallback_agent`로 기록합니다. `SchedulerService`는 그 AI가 설치되고 현재 사용
+가능할 때 이전 AI의 후보에서 작업을 제외하므로 틱 순서와 무관하게 결정적으로 전환합니다.
+대상 AI가 쿨다운·비활성·미설치이면 기존 AI도 다시 후보가 될 수 있어 작업이 영구 고정되지
+않습니다. 사용량 제한은 `retry_count`를 올리지 않고 즉시 같은 우선순위를 설정합니다.
+전용 정책과 `fallback_enabled=false`에서는 이 규칙을 적용하지 않습니다.
 
 ## 5. CLI 안전 경계
 
@@ -188,8 +201,8 @@ flowchart TD
 | `application/task_service.py` | 작업 CRUD·복제·재시도·맨 위 이동·완료 보관·의존성 검증 |
 | `application/workload_planning.py` | 명시적 토큰 예산 검증·결정적 Claude/Codex 분배 |
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
-| `application/scheduler_service.py` | 후보 필터·점수·CAS 예약 |
-| `application/execution_service.py` | CLI 실행과 여섯 결과 경로 처리 |
+| `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |
+| `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback 결정·이력 기록 |
 | `application/recovery_service.py` | 오래된 예약·재시도·고아 PID 복구 |
 | `infrastructure/adapters/` | 설치 확인, 안전한 명령 구성, 오류 분류 |
 | `infrastructure/process_runner.py` | 비동기 subprocess, stdin, 로그, 취소, 타임아웃 |

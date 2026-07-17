@@ -75,7 +75,11 @@ class TaskRunRepository:
         return run
 
     def list_for_task(self, task_id: int) -> list[TaskRun]:
-        stmt = select(TaskRun).where(TaskRun.task_id == task_id).order_by(TaskRun.attempt)
+        stmt = (
+            select(TaskRun)
+            .where(TaskRun.task_id == task_id)
+            .order_by(TaskRun.attempt, TaskRun.id)
+        )
         return list(self._session.scalars(stmt))
 
 
