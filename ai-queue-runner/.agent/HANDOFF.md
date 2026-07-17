@@ -1,34 +1,24 @@
 FROM: codex
-TO: user/review
-TASK: T027 + Markdown cleanup
+TO: claude
+TASK: T028
 STATUS: completed
 
 CHANGED:
-- application/workload_planning.py, task_service.py — explicit token budgets,
-  deterministic Any-task distribution, and single-transaction batch creation.
-- domain/models.py, infrastructure/database.py — persisted estimated_tokens and
-  retry-safe schema v1 -> v2 migration.
-- main.py, application/cli_service.py — plan-batch --dry-run/--json plus
-  estimated-token add/update/output support.
-- ui/task_dialog.py, ui/main_window.py — estimated-token editing and details.
-- tests — planner, capacity failure, rollback, migration, CLI, and UI regressions.
-- README/docs/.agent — JSON contract, architecture, decisions, and completion state.
-- Removed 11 obsolete per-task Markdown instructions and refreshed the root README.
+- ../AI_QUEUE_RUNNER_PLAN.md
+- .agent/STATE.md
+- .agent/TASKS.md
+- .agent/HANDOFF.md
 
 VERIFIED:
-- `..\.venv\Scripts\python -m pytest -q` -> 261 passed in 19.10s
-- `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
-- `.\scripts\build_windows.ps1 -SkipInstall` -> Windows onedir build succeeded
-- `..\.venv\Scripts\python -m ai_queue_runner --help` -> plan-batch listed
+- `git diff --stat` -> Markdown-only changes in ../AI_QUEUE_RUNNER_PLAN.md, .agent/STATE.md, .agent/TASKS.md, .agent/HANDOFF.md
+- pytest/ruff not run; T028 changed Markdown only.
 
 NOTES:
-- Ordinary tasks may keep estimated_tokens=0 (unknown); plan-batch requires every
-  estimate to be positive and persists Any tasks as the selected dedicated policy.
-- Dedicated work is charged first. Any work is largest-first and chooses the lowest
-  projected budget utilization; stable ties select Claude then input order.
-- The first build attempt found a stale AQR process created by an earlier package
-  smoke. That exact PID was stopped; the clean rebuild then completed successfully.
+- Changed plan section 6.2 Claude adapter marker from `[TODO]` to `[DONE]` and made the CLI command-format sentence completed.
+- Changed plan section 6.3 Codex adapter marker from `[TODO]` to `[DONE]` and made the CLI command-format sentence completed.
+- Updated plan section 3.3 to reflect that usage-limit reset times can still be entered manually and are now auto-parsed when available from CLI output.
+- Removed "사용량 복구 예상 시각 자동 파싱" from plan section 20 future extensions because T019 implemented it.
+- Left section 17's initial Claude instruction text unchanged because it is historical task guidance, not current implementation status.
 
 RISKS:
-- Batch dependency_ids can reference existing DB tasks only, not siblings in the same batch.
-- The accelerated soak coverage is green; the optional real-time 8-hour soak was not rerun.
+- Other future-looking statements were left untouched where they describe original phase criteria, review process, or design principles rather than clearly obsolete implementation state.
