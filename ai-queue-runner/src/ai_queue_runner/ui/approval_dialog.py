@@ -35,10 +35,14 @@ class ApprovalDialog(QDialog):
         self.setWindowTitle("실행 승인")
         self.setMinimumSize(700, 520)
 
+        execution_path = str(
+            getattr(task, "worktree_path", None) or getattr(task, "project_path", "")
+        )
+        execution_task = _TaskPathOverride(task, execution_path)
         if command is None and adapter is not None:
-            command = adapter.build_command(task)
+            command = adapter.build_command(execution_task)
         if stdin_text is None and adapter is not None:
-            stdin_text = adapter.build_stdin(task)
+            stdin_text = adapter.build_stdin(execution_task)
         command = list(command or ())
         if stdin_text is None:
             stdin_text = str(getattr(task, "prompt", ""))
@@ -46,7 +50,7 @@ class ApprovalDialog(QDialog):
         self.title_value = QLineEdit(str(getattr(task, "title", "")))
         assigned = getattr(task, "assigned_agent", None) or getattr(task, "agent_policy", "")
         self.agent_value = QLineEdit(enum_value(assigned).title())
-        self.path_value = QLineEdit(str(getattr(task, "project_path", "")))
+        self.path_value = QLineEdit(execution_path)
         self.priority_value = QLineEdit(str(getattr(task, "priority", "")))
         self.command_view = QPlainTextEdit(subprocess.list2cmdline(command))
         self.prompt_view = QPlainTextEdit(stdin_text)
@@ -97,3 +101,12 @@ class ApprovalDialog(QDialog):
     @property
     def prompt_text(self) -> str:
         return self.prompt_view.toPlainText()
+
+
+class _TaskPathOverride:
+    def __init__(self, task: object, project_path: str) -> None:
+        self._task = task
+        self.project_path = project_path
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._task, name)

@@ -38,6 +38,7 @@
 | `show-task ID` | 상세 + 최근 5회 실행 | `recurrence`, `recurrence_interval_days`, `recurrence_source_task_id`로 반복 체인 확인 |
 | `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run` |
 | `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
+| `cleanup-worktree ID` | 병합 완료된 종료 작업의 worktree 제거 | dirty/미병합 커밋이면 거부, 브랜치는 유지 |
 | `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`, `--repeat`, `--clear-repeat`, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
 | `retry-task ID` | 실패(failed)/차단(blocked) 작업 재대기 | 재시도 횟수·오류 초기화 |
 | `cancel-task ID` | 대기·재시도대기·차단 작업 취소 | |
@@ -98,6 +99,38 @@
 `list-tasks`의 `REPEAT` 열과 `show-task`의 `recurrence`에서 규칙을 확인한다. 자동 생성된
 회차의 `recurrence_source_task_id`는 직전 회차 ID다. 아직 실행 전인 현재 회차를
 `cancel-task`로 취소해도 체인이 중단된다.
+
+## Git worktree 병렬 실행
+
+기본값은 off다. 같은 Git 프로젝트의 작업 두 개를 서로 다른 에이전트로 동시에 실행하려면
+설정에 다음을 명시한다.
+
+```toml
+[app]
+worktrees_dir = "worktrees"
+
+[scheduler]
+worktree_parallel_enabled = true
+```
+
+- 잠금 충돌이 없는 첫 작업은 원 프로젝트에서 기존 방식으로 실행된다.
+- 두 번째 잠금 충돌 작업만 `worktrees_dir/T<ID>`의 전용 checkout과 `aqr/T<ID>` 브랜치를 사용한다.
+- 비Git 프로젝트 또는 생성 실패는 작업을 `waiting`으로 되돌려 exclusive 직렬 실행을 기다린다.
+- `show-task ID --json`의 `worktree_path`/`worktree_branch`와
+  `recent_runs[]`의 같은 필드로 실제 실행 위치를 확인한다.
+- 성공·실패·취소 후에도 자동 머지나 자동 삭제를 하지 않는다. 재시도/재시작은 기존
+  checkout을 재사용하므로 사용자가 내용을 검사할 수 있다.
+
+병합이 끝난 뒤 worktree만 정리한다. 아래 명령은 미커밋 파일과 현재 프로젝트 HEAD에
+포함되지 않은 브랜치 커밋을 모두 검사하며, 하나라도 있으면 종료 코드 2로 거부한다.
+
+```powershell
+... cleanup-worktree 7 --json
+```
+
+성공해도 `aqr/T7` 브랜치는 삭제하지 않는다. squash/rebase로 내용만 반영해 브랜치 커밋이
+HEAD의 조상이 아닌 경우도 보수적으로 거부하므로, 필요하면 먼저 정상 merge하거나 Git을
+직접 확인한다.
 
 ## 상태 머신 (어떤 명령이 통하는지)
 

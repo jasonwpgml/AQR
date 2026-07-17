@@ -14,6 +14,8 @@ allowed_project_roots = [
 
 db_path = "data/queue.db"
 logs_dir = "logs"
+# Isolated worktrees are created deterministically as worktrees/T<ID>.
+worktrees_dir = "worktrees"
 log_level = "INFO"   # DEBUG | INFO | WARNING | ERROR
 
 [scheduler]
@@ -43,6 +45,11 @@ reserved_timeout_minutes = 10
 
 # Only "exclusive" is supported in v1 (plan §5.6).
 project_lock_mode = "exclusive"
+
+# Opt in to same-project parallel execution. A lock-conflicting task runs in
+# worktrees/T<ID> on branch aqr/T<ID>; non-Git/setup failures stay serialized.
+worktree_parallel_enabled = false
+worktree_git_timeout_seconds = 30
 
 # Per-agent settings. limit_patterns are substrings searched in CLI output to
 # classify usage-limit errors; adjust them to match your installed CLI versions.

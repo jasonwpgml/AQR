@@ -1,6 +1,6 @@
 FROM: codex
 TO: claude
-TASK: T030
+TASK: T031
 STATUS: completed
 
 CHANGED:
@@ -9,37 +9,48 @@ CHANGED:
 - .agent/STATE.md
 - .agent/TASKS.md
 - .agent/HANDOFF.md
+- README.md
+- config.example.toml
 - docs/AI_GUIDE.md
 - docs/ARCHITECTURE.md
 - src/ai_queue_runner/application/cli_service.py
 - src/ai_queue_runner/application/execution_service.py
-- src/ai_queue_runner/application/recurrence_service.py
+- src/ai_queue_runner/application/runtime.py
+- src/ai_queue_runner/application/scheduler_service.py
 - src/ai_queue_runner/application/task_service.py
+- src/ai_queue_runner/application/worktree_service.py
+- src/ai_queue_runner/config/defaults.py
+- src/ai_queue_runner/config/loader.py
 - src/ai_queue_runner/domain/models.py
 - src/ai_queue_runner/infrastructure/database.py
-- src/ai_queue_runner/infrastructure/repositories.py
+- src/ai_queue_runner/infrastructure/git_worktrees.py
 - src/ai_queue_runner/main.py
-- src/ai_queue_runner/ui/task_dialog.py
-- tests/integration/test_execution_service.py
+- src/ai_queue_runner/ui/approval_dialog.py
+- src/ai_queue_runner/ui/log_viewer.py
+- src/ai_queue_runner/ui/main_window.py
+- tests/integration/test_git_worktrees.py
 - tests/integration/test_repositories.py
-- tests/unit/test_main.py
+- tests/integration/test_stabilization.py
+- tests/unit/test_config_loader.py
 - tests/unit/test_ui.py
 
 VERIFIED:
-- `..\.venv\Scripts\python -m pytest -q` -> 277 passed in 25.47s
+- `..\.venv\Scripts\python -m pytest -q` -> 283 passed in 26.16s
 - `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
 - `git diff --check` -> no whitespace errors (Git emitted only existing LF/CRLF conversion warnings)
 
 NOTES:
-- Schema v4 adds nullable positive `tasks.recurrence_interval_days` (1=daily, 7=weekly, N=N days) and nullable unique self-FK `recurrence_source_task_id`.
-- `ExecutionService` invokes `RecurrenceService` only on a successful result. The succeeded status, completion timestamp, and waiting successor are committed in the same transaction.
-- The successor copies title, prompt, project path, agent policy, priority, token estimate, approval/retry settings, tags, dependencies, and recurrence interval. Runtime state, assignment, fallback, and retry count start clean; `not_before = completed_at + interval`.
-- Reprocessing checks the existing successor by source ID, while the database unique constraint is the final duplicate guard. A crash cannot commit success without its successor or vice versa.
-- Failed, blocked, and cancelled paths do not invoke recurrence generation. Clearing the rule with `update-task --clear-repeat`, selecting no recurrence in the GUI, or cancelling the current occurrence stops the chain.
-- CLI supports `--repeat daily|weekly|N`, `--clear-repeat`, JSON recurrence fields, a list REPEAT column, and show-task details. The GUI dialog supports none/daily/weekly/custom-day rules.
-- The successor's `not_before` is consumed by the existing calendar activity query, so T023 required no calendar-specific code change.
-- Removed only the implemented recurring-task bullet from plan section 20.
+- Schema v5 adds `tasks.use_worktree/worktree_path/worktree_branch` and matching path/branch fields on `task_runs`; v4 databases migrate idempotently.
+- `[scheduler] worktree_parallel_enabled=false` is the opt-in switch. `app.worktrees_dir` and the Git timeout are configurable; relative worktree paths resolve beside the config file.
+- The ordinary CAS still requires no reserved/running same-project row. Only an enabled lock-conflicting candidate uses an alternate CAS that requires the lock to exist and marks that reservation for isolation.
+- Immediately after reservation, `WorktreeService` creates or reuses `worktrees_dir/T<ID>` on `aqr/T<ID>`. Non-Git projects, conflicting branch/path ownership, and Git failures release task+agent back to waiting, preserving exclusive serial fallback.
+- Successful preparation changes only the adapter execution cwd/prompt path. The task's original project path remains stable, while task details, approval preview, log labels, `show-task`, and task-run rows expose the actual path and branch.
+- Worktrees survive success, failure, cancellation, stale reservation recovery, and running-task recovery. A persisted isolated task revalidates/reuses the same registered checkout after restart; orphan worktree directories are not scheduler locks.
+- `cleanup-worktree ID` accepts terminal tasks, refuses dirty files and branch commits not ancestral to the original project's current HEAD, removes only the registered managed worktree, and leaves the branch plus DB run history. Tasks with live worktrees cannot be deleted or moved to another project before cleanup.
+- Removed only the implemented Git-worktree bullet from plan section 20. No automatic merge, conflict resolution, commit, branch deletion, or PR behavior was added.
 
 RISKS:
-- Cadence is completion-based, so a long-running or delayed occurrence shifts later occurrences instead of backfilling missed wall-clock slots.
-- Pre-existing untracked `.agent/TASK_T030.md` and an external modification to `../.claude/skills/codex-delegate/SKILL.md` were not modified.
+- Cleanup deliberately rejects squash/rebase-only integrations because the task branch is not an ancestor of project HEAD; users must verify and clean those cases manually.
+- Completed branches are intentionally retained and can accumulate until the user manages them.
+- The feature has a global opt-in only; there is no user-editable per-task override.
+- Pre-existing untracked `.agent/TASK_T031.md` was read as the task source and not modified.

@@ -232,6 +232,12 @@ def main(argv: list[str] | None = None) -> int:
         help="show deterministic assignments without creating tasks",
     )
     _add_subcommand_json_option(plan_batch)
+    cleanup_worktree = subcommands.add_parser(
+        "cleanup-worktree",
+        help="remove a completed task worktree after verifying all changes are merged",
+    )
+    cleanup_worktree.add_argument("task_id", type=int, metavar="ID")
+    _add_subcommand_json_option(cleanup_worktree)
     args = parser.parse_args(argv)
 
     if args.version:

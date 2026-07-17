@@ -2,7 +2,7 @@
 
 Claude Code와 Codex CLI에 맡길 작업을 미리 등록하고, 에이전트 상태·우선순위·선행 작업·대기 시간에 따라 안전하게 실행하는 Windows용 로컬 데스크톱 앱입니다.
 
-작업과 실행 이력은 SQLite에 유지되며, 동일 작업의 중복 배정과 동일 프로젝트의 동시 실행을 DB 예약 단계에서 막습니다. 전체 요구사항은 [`../AI_QUEUE_RUNNER_PLAN.md`](../AI_QUEUE_RUNNER_PLAN.md), 구현 구조는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), UI 기준은 [`DESIGN.md`](DESIGN.md)에 있습니다.
+작업과 실행 이력은 SQLite에 유지되며, 동일 작업의 중복 배정과 동일 프로젝트의 동시 실행을 DB 예약 단계에서 막습니다. 명시적으로 opt-in하면 잠금 충돌 작업만 전용 Git worktree에서 병렬 실행할 수 있습니다. 전체 요구사항은 [`../AI_QUEUE_RUNNER_PLAN.md`](../AI_QUEUE_RUNNER_PLAN.md), 구현 구조는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), UI 기준은 [`DESIGN.md`](DESIGN.md)에 있습니다.
 
 ## 현재 상태
 
@@ -40,6 +40,10 @@ allowed_project_roots = ["C:/Users/me/projects"]
 
 `global_auto_run = false`이면 모든 예약 작업에 승인 창이 표시됩니다. `true`여도 작업의 승인 모드가 `confirm`이면 승인해야 실행됩니다.
 
+같은 Git 프로젝트를 에이전트별로 격리해 병렬 실행하려면 `[scheduler]`의
+`worktree_parallel_enabled = true`를 명시합니다(기본 `false`). 충돌 작업은
+`worktrees_dir/T<ID>`와 `aqr/T<ID>` 브랜치를 사용하며 자동 머지하지 않습니다.
+
 ## 사용 흐름
 
 1. Claude/Codex 상태 패널에서 사용 가능 여부나 재사용 가능 시각을 설정합니다.
@@ -53,7 +57,7 @@ allowed_project_roots = ["C:/Users/me/projects"]
 
 ## AI/CLI 연동
 
-GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `queue-status`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`), 에이전트 상태(`set-agent`), 토큰 배치 계획(`plan-batch`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
+GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `queue-status`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`), worktree 정리(`cleanup-worktree`), 에이전트 상태(`set-agent`), 토큰 배치 계획(`plan-batch`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
 
 ```powershell
 # AI 도우미가 특정 프로젝트의 작업을 등록

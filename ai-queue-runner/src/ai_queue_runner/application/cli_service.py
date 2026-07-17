@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from ai_queue_runner.application.agent_service import AgentService, AgentView
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
 from ai_queue_runner.application.workload_planning import WorkloadBatch, plan_workload
+from ai_queue_runner.application.worktree_service import WorktreeService
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.enums import TaskStatus
 from ai_queue_runner.infrastructure.database import (
@@ -34,8 +35,9 @@ def run_cli_command(args: argparse.Namespace, config: AppConfig) -> str:
         session_factory = make_session_factory(engine)
         service = TaskService(session_factory, config)
         agents = AgentService(session_factory)
+        worktrees = WorktreeService(session_factory, config)
         try:
-            return _dispatch(args, service, agents, config)
+            return _dispatch(args, service, agents, worktrees, config)
         except (KeyError, ValidationError, ValueError) as exc:
             raise CliUsageError(_one_line(str(exc)).strip("'")) from exc
     finally:
@@ -46,6 +48,7 @@ def _dispatch(
     args: argparse.Namespace,
     service: TaskService,
     agents: AgentService,
+    worktrees: WorktreeService,
     config: AppConfig,
 ) -> str:
     if args.command == "add-task":
@@ -150,6 +153,18 @@ def _dispatch(
         return _queue_status(args, service, agents, config)
     if args.command == "plan-batch":
         return _plan_batch(args, service)
+    if args.command == "cleanup-worktree":
+        cleaned = worktrees.cleanup(args.task_id)
+        return _json_or_text(
+            {
+                "task_id": cleaned.task_id,
+                "worktree_path": cleaned.path,
+                "worktree_branch": cleaned.branch,
+            },
+            f"작업 #{cleaned.task_id} worktree 제거: {cleaned.path} "
+            f"(branch {cleaned.branch} 유지)",
+            args.json,
+        )
     raise CliUsageError(f"지원하지 않는 명령입니다: {args.command}")
 
 
@@ -215,6 +230,8 @@ def _queue_status(
     ]
     payload = {
         "global_auto_run": config.app.global_auto_run,
+        "worktree_parallel_enabled": config.scheduler.worktree_parallel_enabled,
+        "worktrees_dir": str(config.app.worktrees_dir),
         "allowed_project_roots": [str(root) for root in config.app.allowed_project_roots],
         "task_counts": dict(sorted(counts.items())),
         "archived_count": archived_count,
@@ -223,6 +240,9 @@ def _queue_status(
     }
     lines = [
         f"global_auto_run: {str(config.app.global_auto_run).lower()}",
+        "worktree_parallel_enabled: "
+        f"{str(config.scheduler.worktree_parallel_enabled).lower()}",
+        f"worktrees_dir: {config.app.worktrees_dir}",
         "allowed_project_roots: "
         + (", ".join(payload["allowed_project_roots"]) or "(비어 있음 — 실행 차단됨)"),
         "task_counts: "
@@ -391,6 +411,9 @@ def _task_record(task: object) -> dict[str, Any]:
         "tags": list(task.tags),
         "dependency_ids": list(task.dependency_ids),
         "archived": bool(task.archived),
+        "use_worktree": bool(task.use_worktree),
+        "worktree_path": task.worktree_path,
+        "worktree_branch": task.worktree_branch,
     }
 
 
@@ -410,6 +433,8 @@ def _run_record(run: object) -> dict[str, Any]:
         "result_summary": run.result_summary,
         "error_type": _enum_value(run.error_type),
         "fallback_to_agent": _enum_value(run.fallback_to_agent),
+        "worktree_path": run.worktree_path,
+        "worktree_branch": run.worktree_branch,
     }
 
 
@@ -444,6 +469,11 @@ def _task_details(record: dict[str, Any]) -> str:
             + (
                 f"fallback={run['agent']}->{run['fallback_to_agent']} "
                 if run["fallback_to_agent"]
+                else ""
+            )
+            + (
+                f"worktree={run['worktree_branch']}@{run['worktree_path']} "
+                if run["worktree_path"]
                 else ""
             )
             + f"result_summary={_text_value(run['result_summary'])}"

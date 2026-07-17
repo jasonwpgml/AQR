@@ -44,7 +44,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     except ValidationError as exc:
         raise ConfigError(f"invalid configuration in {path}:\n{exc}") from exc
 
-    # AIDEV-NOTE: relative db_path/logs_dir resolve against the config file's
+    # AIDEV-NOTE: relative DB/log/worktree paths resolve against the config file's
     # directory, not the process cwd, so launching from anywhere is safe.
     _resolve_app_paths(config, path.resolve().parent)
     return config
@@ -57,6 +57,7 @@ def _resolve(base: Path, value: Path) -> Path:
 def _resolve_app_paths(config: AppConfig, base: Path) -> None:
     config.app.db_path = _resolve(base, config.app.db_path)
     config.app.logs_dir = _resolve(base, config.app.logs_dir)
+    config.app.worktrees_dir = _resolve(base, config.app.worktrees_dir)
 
 
 def default_app_data_dir() -> Path:

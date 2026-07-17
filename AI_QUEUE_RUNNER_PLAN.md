@@ -1406,7 +1406,6 @@ Claude는 매 작업 후 아래를 확인한다.
 - Gemini CLI 어댑터
 - OpenAI API / Anthropic API 비용 기반 라우팅
 - 작업 자동 분할
-- Git worktree 기반 병렬 작업
 - 원격 서버 실행
 - 웹 대시보드
 - 프로젝트별 일일 작업 요약

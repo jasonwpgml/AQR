@@ -12,9 +12,11 @@ def test_defaults_when_no_config_file(tmp_path, monkeypatch):
     assert config.app.global_auto_run is False
     assert config.app.db_path == tmp_path / "local" / "AIQueueRunner" / "data/queue.db"
     assert config.app.logs_dir == tmp_path / "local" / "AIQueueRunner" / "logs"
+    assert config.app.worktrees_dir == tmp_path / "local" / "AIQueueRunner" / "worktrees"
     assert set(config.agents) == {"claude", "codex"}
     assert config.scheduler.fallback_enabled is True
     assert config.scheduler.fallback_failure_threshold == 1
+    assert config.scheduler.worktree_parallel_enabled is False
 
 
 def test_default_app_data_dir_has_home_fallback(tmp_path, monkeypatch):
@@ -42,6 +44,7 @@ log_level = "DEBUG"
 dedicated_agent_bonus = 30
 fallback_enabled = false
 fallback_failure_threshold = 2
+worktree_parallel_enabled = true
 
 [agents.claude]
 limit_patterns = ["custom limit message"]
@@ -55,6 +58,7 @@ limit_patterns = ["custom limit message"]
     assert config.scheduler.dedicated_agent_bonus == 30
     assert config.scheduler.fallback_enabled is False
     assert config.scheduler.fallback_failure_threshold == 2
+    assert config.scheduler.worktree_parallel_enabled is True
     assert config.agents["claude"].limit_patterns == ["custom limit message"]
     assert config.agents["claude"].executable == "claude"
     assert config.agents["codex"].executable == "codex"
@@ -64,10 +68,15 @@ limit_patterns = ["custom limit message"]
 
 def test_relative_paths_resolve_against_config_dir(tmp_path):
     path = tmp_path / "config.toml"
-    path.write_text('[app]\ndb_path = "data/queue.db"\nlogs_dir = "logs"\n', encoding="utf-8")
+    path.write_text(
+        '[app]\ndb_path = "data/queue.db"\nlogs_dir = "logs"\n'
+        'worktrees_dir = "worktrees"\n',
+        encoding="utf-8",
+    )
     config = load_config(path)
     assert config.app.db_path == tmp_path / "data/queue.db"
     assert config.app.logs_dir == tmp_path / "logs"
+    assert config.app.worktrees_dir == tmp_path / "worktrees"
 
 
 def test_invalid_toml_raises(tmp_path):

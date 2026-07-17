@@ -208,6 +208,33 @@ class TestPersistence:
             assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
         engine.dispose()
 
+    def test_schema_v4_is_migrated_with_worktree_columns(self, tmp_path):
+        db_path = tmp_path / "v4.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+            connection.exec_driver_sql(
+                "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '4')"
+            )
+
+        init_db(engine)
+
+        task_columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+        run_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_runs")
+        }
+        assert {"use_worktree", "worktree_path", "worktree_branch"} <= task_columns
+        assert {"worktree_path", "worktree_branch"} <= run_columns
+        with make_session_factory(engine)() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
+
 
 class TestDependencies:
     def test_dependency_roundtrip(self, session):

@@ -342,6 +342,15 @@ class MainWindow(QMainWindow):
             f"프로젝트: {getattr(task, 'project_path', '')}",
             f"재시도: {getattr(task, 'retry_count', 0)} / {getattr(task, 'max_retries', 0)}",
         ]
+        worktree_path = getattr(task, "worktree_path", None)
+        worktree_branch = getattr(task, "worktree_branch", None)
+        if worktree_path and worktree_branch:
+            details.extend(
+                (
+                    f"Worktree 브랜치: {worktree_branch}",
+                    f"Worktree 경로: {worktree_path}",
+                )
+            )
         fallback_agent = getattr(task, "fallback_agent", None)
         if fallback_agent is not None:
             details.append(f"Fallback 우선 AI: {enum_value(fallback_agent)}")

@@ -44,6 +44,7 @@ def test_exported_config_roundtrips_through_loader(tmp_path: Path):
     config = AppConfig()
     config.app.db_path = tmp_path / "data" / "queue.db"
     config.app.logs_dir = tmp_path / "logs"
+    config.app.worktrees_dir = tmp_path / "worktrees"
     config.app.allowed_project_roots = [tmp_path]
     config.scheduler.poll_interval_seconds = 7
     config.agents["claude"].limit_patterns = ["session limit", "사용량 제한"]

@@ -102,6 +102,9 @@ class TaskView:
     tags: tuple[str, ...]
     dependency_ids: tuple[int, ...]
     archived: bool
+    use_worktree: bool
+    worktree_path: str | None
+    worktree_branch: str | None
     estimated_tokens: int = 0
 
 
@@ -121,6 +124,8 @@ class RunView:
     result_summary: str | None
     error_type: ErrorType | None
     fallback_to_agent: AgentName | None
+    worktree_path: str | None
+    worktree_branch: str | None
 
 
 @dataclass(frozen=True)
@@ -215,8 +220,19 @@ class TaskService:
             if any(_depends_on(dependency, task_id) for dependency in dependencies):
                 raise ValueError("task dependencies cannot contain a cycle")
 
+            project_changed = task.project_path != str(canonical_path)
+            if (
+                project_changed
+                and task.worktree_path
+                and Path(task.worktree_path).exists()
+            ):
+                raise ValueError("clean up the task worktree before changing its project")
             for field, value in _task_values(draft, canonical_path).items():
                 setattr(task, field, value)
+            if project_changed:
+                task.use_worktree = False
+                task.worktree_path = None
+                task.worktree_branch = None
             if draft.agent_policy is not AgentPolicy.ANY:
                 task.fallback_agent = None
             task.depends_on = dependencies
@@ -311,6 +327,8 @@ class TaskService:
             task = self._require_task(repo, task_id)
             if task.status in {TaskStatus.RESERVED, TaskStatus.RUNNING}:
                 raise ValueError("reserved or running tasks must be cancelled before deletion")
+            if task.worktree_path and Path(task.worktree_path).exists():
+                raise ValueError("clean up the task worktree before deleting its history")
             dependent_ids = sorted(dependent.id for dependent in task.dependents)
             if dependent_ids:
                 joined_ids = ", ".join(str(dependent_id) for dependent_id in dependent_ids)
@@ -403,6 +421,9 @@ def _to_task_view(task: Task) -> TaskView:
         tags=tuple(tag for tag in task.tags if tag != _ARCHIVED_TAG),
         dependency_ids=tuple(dependency.id for dependency in task.depends_on),
         archived=_is_archived(task),
+        use_worktree=task.use_worktree,
+        worktree_path=task.worktree_path,
+        worktree_branch=task.worktree_branch,
         estimated_tokens=task.estimated_tokens,
     )
 
@@ -438,4 +459,6 @@ def _to_run_view(run: TaskRun) -> RunView:
         result_summary=run.result_summary,
         error_type=run.error_type,
         fallback_to_agent=run.fallback_to_agent,
+        worktree_path=run.worktree_path,
+        worktree_branch=run.worktree_branch,
     )

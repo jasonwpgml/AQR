@@ -23,6 +23,7 @@ from ai_queue_runner.application.scheduler_service import (
     reserve_next_task,
     reserve_specific_task,
 )
+from ai_queue_runner.application.worktree_service import WorktreeService
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentName, AgentStatus, ApprovalMode, TaskStatus
@@ -53,6 +54,7 @@ class QueueRuntime:
         self._config = config
         self._adapters = {AgentName(name): adapter for name, adapter in adapters.items()}
         self._execution_service = ExecutionService(config, process_runner or ProcessRunner())
+        self._worktree_service = WorktreeService(session_factory, config)
         self._scheduler = scheduler or BackgroundScheduler()
 
         self._tick_lock = threading.Lock()
@@ -138,24 +140,35 @@ class QueueRuntime:
                 if agent not in eligible_agents:
                     continue
                 adapter = self._adapters[agent]
-                with self._session_factory() as session:
-                    task = reserve_next_task(
-                        session,
-                        self._config,
-                        agent,
-                        now,
-                        eligible_agents=eligible_agents,
-                    )
-                    if task is None:
-                        continue
-                    task_id = task.id
-                    should_run = (
-                        self._config.app.global_auto_run
-                        and task.approval_mode is ApprovalMode.AUTO
-                    )
-                reserved_ids.append(task_id)
+                excluded_task_ids: set[int] = set()
+                reserved_task_id: int | None = None
+                should_run = False
+                while True:
+                    with self._session_factory() as session:
+                        task = reserve_next_task(
+                            session,
+                            self._config,
+                            agent,
+                            now,
+                            eligible_agents=eligible_agents,
+                            exclude_task_ids=excluded_task_ids,
+                        )
+                        if task is None:
+                            break
+                        if not self._worktree_service.prepare_reserved(session, task):
+                            excluded_task_ids.add(task.id)
+                            continue
+                        reserved_task_id = task.id
+                        should_run = (
+                            self._config.app.global_auto_run
+                            and task.approval_mode is ApprovalMode.AUTO
+                        )
+                    break
+                if reserved_task_id is None:
+                    continue
+                reserved_ids.append(reserved_task_id)
                 if should_run:
-                    self._submit_execution(task_id, agent)
+                    self._submit_execution(reserved_task_id, agent)
             return tuple(reserved_ids)
         finally:
             self._tick_lock.release()
@@ -167,6 +180,8 @@ class QueueRuntime:
                 raise KeyError(f"task {task_id} not found")
             if task.status is not TaskStatus.RESERVED or task.assigned_agent is None:
                 raise ValueError("only reserved tasks can be approved")
+            if not self._worktree_service.prepare_reserved(session, task):
+                raise ValueError("worktree unavailable; task returned to the waiting queue")
             agent = task.assigned_agent
         return self._submit_execution(task_id, agent)
 
@@ -195,16 +210,17 @@ class QueueRuntime:
                 continue
             with self._session_factory() as session:
                 if (
-                    reserve_specific_task(
+                    (reserved := reserve_specific_task(
                         session,
                         self._config,
                         task_id,
                         agent,
                         eligible_agents=eligible_agents,
-                    )
+                    ))
                     is not None
                 ):
-                    return True
+                    if self._worktree_service.prepare_reserved(session, reserved):
+                        return True
         raise ValueError("no compatible available agent can reserve this task")
 
     def reject(self, task_id: int, *, block: bool = False) -> bool:
@@ -275,6 +291,8 @@ class QueueRuntime:
         with self._session_factory() as session:
             task = TaskRepository(session).get(task_id)
             if task is None or task.status is not TaskStatus.RESERVED:
+                return
+            if not self._worktree_service.prepare_reserved(session, task):
                 return
             await self._execution_service.execute(session, task, adapter)
 
