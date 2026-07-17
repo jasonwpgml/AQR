@@ -55,6 +55,7 @@ def make_task(task_id: int = 1, **overrides):
         "agent_policy": AgentPolicy.CODEX,
         "assigned_agent": None,
         "priority": 70,
+        "estimated_tokens": 0,
         "status": TaskStatus.WAITING,
         "approval_mode": ApprovalMode.CONFIRM,
         "max_retries": 2,
@@ -122,6 +123,7 @@ def test_task_dialog_validates_and_builds_draft_with_dependencies(app, tmp_path)
 
     dialog.title_edit.setText("UI 연결")
     dialog.prompt_edit.setPlainText("작업 목록을 연결한다.")
+    dialog.estimated_tokens_spin.setValue(12_000)
     dialog.dependencies_list.item(0).setCheckState(Qt.CheckState.Checked)
     draft = dialog.build_draft()
 
@@ -129,6 +131,7 @@ def test_task_dialog_validates_and_builds_draft_with_dependencies(app, tmp_path)
     assert draft.project_path == project.resolve()
     assert draft.agent_policy is AgentPolicy.ANY
     assert draft.approval_mode is ApprovalMode.CONFIRM
+    assert draft.estimated_tokens == 12_000
     assert draft.dependency_ids == [2]
 
 
@@ -252,7 +255,7 @@ def test_task_dialog_edit_mode_selects_containing_root_and_existing_path(app, tm
     project = containing_root / "project"
     first_root.mkdir()
     project.mkdir(parents=True)
-    task = make_task(project_path=str(project))
+    task = make_task(project_path=str(project), estimated_tokens=8_000)
 
     dialog = TaskDialog(
         task,
@@ -261,6 +264,7 @@ def test_task_dialog_edit_mode_selects_containing_root_and_existing_path(app, tm
 
     assert dialog.root_combo.currentText() == str(containing_root)
     assert dialog.path_display.text() == str(project.resolve())
+    assert dialog.build_draft().estimated_tokens == 8_000
 
 
 def test_task_dialog_root_switch_resets_effective_path(app, tmp_path):

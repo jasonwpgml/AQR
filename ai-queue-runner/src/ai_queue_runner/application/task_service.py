@@ -42,6 +42,7 @@ class TaskDraft(BaseModel):
     project_path: Path
     agent_policy: AgentPolicy = AgentPolicy.ANY
     priority: int = Field(default=50, ge=0, le=100)
+    estimated_tokens: int = Field(default=0, ge=0)
     approval_mode: ApprovalMode = ApprovalMode.CONFIRM
     max_retries: int = Field(default=2, ge=0)
     retry_delay_minutes: int = Field(default=10, ge=0)
@@ -97,6 +98,7 @@ class TaskView:
     tags: tuple[str, ...]
     dependency_ids: tuple[int, ...]
     archived: bool
+    estimated_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -170,18 +172,30 @@ class TaskService:
             ]
 
     def create(self, draft: TaskDraft) -> TaskView:
-        canonical_path = self._canonical_project_path(draft.project_path)
+        return self.create_batch([draft])[0]
+
+    def create_batch(self, drafts: list[TaskDraft]) -> list[TaskView]:
+        """Create every draft in one transaction or leave the queue unchanged."""
+        if not drafts:
+            return []
+        canonical_paths = [
+            self._canonical_project_path(draft.project_path) for draft in drafts
+        ]
         with self._session_factory() as session:
             repo = TaskRepository(session)
-            dependencies = self._load_dependencies(repo, draft.dependency_ids)
-            task = repo.add(
-                Task(
-                    **_task_values(draft, canonical_path),
-                    depends_on=dependencies,
+            tasks = []
+            for draft, canonical_path in zip(drafts, canonical_paths, strict=True):
+                dependencies = self._load_dependencies(repo, draft.dependency_ids)
+                tasks.append(
+                    repo.add(
+                        Task(
+                            **_task_values(draft, canonical_path),
+                            depends_on=dependencies,
+                        )
+                    )
                 )
-            )
             session.commit()
-            return _to_task_view(task)
+            return [_to_task_view(task) for task in tasks]
 
     def update(self, task_id: int, draft: TaskDraft) -> TaskView:
         canonical_path = self._canonical_project_path(draft.project_path)
@@ -212,6 +226,7 @@ class TaskService:
                 project_path=source.project_path,
                 agent_policy=source.agent_policy,
                 priority=source.priority,
+                estimated_tokens=source.estimated_tokens,
                 approval_mode=source.approval_mode,
                 max_retries=source.max_retries,
                 retry_delay_minutes=source.retry_delay_minutes,
@@ -332,6 +347,7 @@ def _task_values(draft: TaskDraft, canonical_path: Path) -> dict[str, object]:
         "project_path": str(canonical_path),
         "agent_policy": draft.agent_policy,
         "priority": draft.priority,
+        "estimated_tokens": draft.estimated_tokens,
         "approval_mode": draft.approval_mode,
         "max_retries": draft.max_retries,
         "retry_delay_minutes": draft.retry_delay_minutes,
@@ -374,6 +390,7 @@ def _to_task_view(task: Task) -> TaskView:
         tags=tuple(tag for tag in task.tags if tag != _ARCHIVED_TAG),
         dependency_ids=tuple(dependency.id for dependency in task.depends_on),
         archived=_is_archived(task),
+        estimated_tokens=task.estimated_tokens,
     )
 
 

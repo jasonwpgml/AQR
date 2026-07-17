@@ -4,12 +4,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+
+def _migrate_v1_to_v2(session: Session) -> None:
+    columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "estimated_tokens" not in columns:
+        session.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN estimated_tokens INTEGER NOT NULL "
+                "DEFAULT 0 CHECK (estimated_tokens >= 0)"
+            )
+        )
+
+
+_MIGRATIONS = {1: _migrate_v1_to_v2}
 
 
 def create_db_engine(db_path: Path | str) -> Engine:
@@ -46,12 +63,18 @@ def init_db(engine: Engine) -> None:
             raise RuntimeError(
                 f"database schema v{version} is newer than app schema v{SCHEMA_VERSION}"
             )
-        if version < SCHEMA_VERSION:
-            # AIDEV-TODO: add a migration registry when SCHEMA_VERSION first bumps;
-            # v1 has nothing to migrate from.
-            raise RuntimeError(
-                f"no migration path from schema v{version} to v{SCHEMA_VERSION}"
-            )
+        # AIDEV-NOTE: create_all() never adds columns to existing SQLite tables;
+        # migrations must be safe to retry before advancing the stored version.
+        while version < SCHEMA_VERSION:
+            migration = _MIGRATIONS.get(version)
+            if migration is None:
+                raise RuntimeError(
+                    f"no migration path from schema v{version} to v{SCHEMA_VERSION}"
+                )
+            migration(session)
+            version += 1
+            stored.value = version
+            session.commit()
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:

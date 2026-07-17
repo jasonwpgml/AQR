@@ -1,12 +1,12 @@
 ```yaml
-phase: 6
-current_goal: "AI-friendly headless control + approval UX fixes"
-active_task: "T026"
-owner: claude
+phase: 7
+current_goal: "token-aware multi-agent workload distribution"
+active_task: "T027"
+owner: codex
 status: done
 blocked_by: null
 last_verified:
-  command: "..\\.venv\\Scripts\\python -m pytest -q; ..\\.venv\\Scripts\\python -m ruff check src tests"
-  result: "254 passed in 10.95s; All checks passed!"
-next: "rebuild exe (scripts/build_windows.ps1)"
+  command: "pytest -q; ruff check src tests; scripts/build_windows.ps1 -SkipInstall"
+  result: "261 passed in 19.10s; All checks passed; Windows onedir build succeeded"
+next: "user review; commit when requested"
 ```

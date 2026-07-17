@@ -61,6 +61,13 @@ def main(argv: list[str] | None = None) -> int:
     add_task.add_argument("--project", type=Path, required=True, help="absolute project path")
     add_task.add_argument("--agent", choices=("claude", "codex", "any"), default="any")
     add_task.add_argument("--priority", type=int, default=50, metavar="0-100")
+    add_task.add_argument(
+        "--estimated-tokens",
+        type=int,
+        default=0,
+        metavar="N",
+        help="estimated workload tokens; required to be positive in plan-batch",
+    )
     add_task.add_argument("--approval", choices=("auto", "confirm"), default="confirm")
     add_task.add_argument(
         "--not-before",
@@ -125,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     update_task.add_argument("--project", type=Path, help="new absolute project path")
     update_task.add_argument("--agent", choices=("claude", "codex", "any"))
     update_task.add_argument("--priority", type=int, metavar="0-100")
+    update_task.add_argument("--estimated-tokens", type=int, metavar="N")
     update_task.add_argument("--approval", choices=("auto", "confirm"))
     update_task.add_argument(
         "--not-before",
@@ -197,6 +205,18 @@ def main(argv: list[str] | None = None) -> int:
         "queue-status", help="summarize tasks, agents, and automation settings"
     )
     _add_subcommand_json_option(queue_status)
+
+    plan_batch = subcommands.add_parser(
+        "plan-batch",
+        help="distribute a token-budgeted JSON workload and enqueue it atomically",
+    )
+    plan_batch.add_argument("plan_path", type=Path, metavar="PATH")
+    plan_batch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show deterministic assignments without creating tasks",
+    )
+    _add_subcommand_json_option(plan_batch)
     args = parser.parse_args(argv)
 
     if args.version:

@@ -13,6 +13,7 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     ForeignKey,
+    Integer,
     Text,
 )
 from sqlalchemy import (
@@ -66,6 +67,9 @@ class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
         CheckConstraint("priority BETWEEN 0 AND 100", name="ck_tasks_priority_range"),
+        CheckConstraint(
+            "estimated_tokens >= 0", name="ck_tasks_estimated_tokens_nonnegative"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -75,6 +79,7 @@ class Task(Base):
     agent_policy: Mapped[AgentPolicy] = mapped_column(_enum(AgentPolicy))
     assigned_agent: Mapped[AgentName | None] = mapped_column(_enum(AgentName), default=None)
     priority: Mapped[int] = mapped_column(default=50)
+    estimated_tokens: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[TaskStatus] = mapped_column(_enum(TaskStatus), default=TaskStatus.WAITING)
     approval_mode: Mapped[ApprovalMode] = mapped_column(
         _enum(ApprovalMode), default=ApprovalMode.CONFIRM

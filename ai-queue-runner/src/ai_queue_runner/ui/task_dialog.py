@@ -139,6 +139,11 @@ class TaskDialog(QDialog):
         self.priority_spin.setRange(0, 100)
         self.priority_spin.setValue(50)
 
+        self.estimated_tokens_spin = QSpinBox()
+        self.estimated_tokens_spin.setRange(0, 100_000_000)
+        self.estimated_tokens_spin.setSingleStep(1_000)
+        self.estimated_tokens_spin.setSpecialValueText("미지정")
+
         self.approval_combo = QComboBox()
         self.approval_combo.addItem("승인 후 실행", ApprovalMode.CONFIRM)
         self.approval_combo.addItem("자동 실행", ApprovalMode.AUTO)
@@ -178,6 +183,7 @@ class TaskDialog(QDialog):
         form.addRow("프로젝트 경로 *", path_row)
         form.addRow("담당 AI", self.agent_combo)
         form.addRow("우선순위", self.priority_spin)
+        form.addRow("예상 토큰", self.estimated_tokens_spin)
         form.addRow("실행 방식", self.approval_combo)
         form.addRow("최대 재시도", self.max_retries_spin)
         form.addRow("재시도 간격", self.retry_delay_spin)
@@ -330,6 +336,7 @@ class TaskDialog(QDialog):
         self._refresh_project_roots(str(getattr(task, "project_path", "")))
         self._select_data(self.agent_combo, enum_value(getattr(task, "agent_policy", "any")))
         self.priority_spin.setValue(int(getattr(task, "priority", 50)))
+        self.estimated_tokens_spin.setValue(int(getattr(task, "estimated_tokens", 0)))
         self._select_data(
             self.approval_combo,
             enum_value(getattr(task, "approval_mode", ApprovalMode.CONFIRM)),
@@ -520,6 +527,7 @@ class TaskDialog(QDialog):
             project_path=str(project_path),
             agent_policy=self.agent_combo.currentData(),
             priority=self.priority_spin.value(),
+            estimated_tokens=self.estimated_tokens_spin.value(),
             approval_mode=self.approval_combo.currentData(),
             max_retries=self.max_retries_spin.value(),
             retry_delay_minutes=self.retry_delay_spin.value(),

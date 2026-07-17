@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 
 from ai_queue_runner.domain.enums import AgentName, AgentStatus, ErrorType, TaskStatus
@@ -52,6 +53,7 @@ class TestTaskCrud:
         assert task.status is TaskStatus.WAITING
         assert task.priority == 50
         assert task.retry_count == 0
+        assert task.estimated_tokens == 0
         assert task.tags == []
         assert task.created_at is not None
 
@@ -117,6 +119,31 @@ class TestPersistence:
 
     def test_schema_version_is_stamped(self, session):
         assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+
+    def test_schema_v1_is_migrated_with_estimated_tokens(self, tmp_path):
+        db_path = tmp_path / "v1.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+            connection.exec_driver_sql("INSERT INTO tasks (id) VALUES (1)")
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '1')"
+            )
+
+        init_db(engine)
+
+        columns = {column["name"]: column for column in inspect(engine).get_columns("tasks")}
+        assert columns["estimated_tokens"]["nullable"] is False
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT estimated_tokens FROM tasks WHERE id = 1"
+            ).scalar_one() == 0
+        with make_session_factory(engine)() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
 
 
 class TestDependencies:

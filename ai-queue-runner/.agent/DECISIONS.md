@@ -39,3 +39,6 @@ D034 Completed-task archival uses a reserved internal tag because v1's eight-sta
 D035 “Move to top” assigns priority 100 and demotes other waiting priority-100 tasks to 99, preserving the configured 0..100 priority model without a schema-only queue-position field
 D036 Exclusive project locking is part of the atomic task-claim UPDATE (`NOT EXISTS` reserved/running same-path row), not only the pre-selection snapshot
 D037 Application services expose one canonical method name per operation; the UI does not carry compatibility aliases or signature-inspection fallbacks
+D038 Token workload plans use explicit per-batch Claude/Codex budgets; dedicated tasks consume their own budget first, then Any tasks use deterministic largest-first projected-utilization balancing with Claude as the final tie-breaker
+D039 `estimated_tokens=0` means unknown for ordinary tasks, but every `plan-batch` task requires a positive estimate; planned Any tasks persist as the selected dedicated policy
+D040 Batch enqueue validates the complete workload then commits all tasks once; `dependency_ids` in a batch may reference existing database tasks, not sibling tasks that do not yet have IDs

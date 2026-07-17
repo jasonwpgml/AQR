@@ -33,11 +33,12 @@
 
 | 명령 | 용도 | 주요 옵션/인자 |
 |---|---|---|
-| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--tag`, `--depends-on` |
+| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--tag`, `--depends-on` |
 | `list-tasks` | 목록 조회 | `--status {waiting,reserved,running,succeeded,failed,retry_wait,blocked,cancelled,archived}` |
 | `show-task ID` | 상세 + 최근 5회 실행 | |
 | `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run` |
-| `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`로 전환, `--priority`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
+| `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
+| `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`로 전환, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
 | `retry-task ID` | 실패(failed)/차단(blocked) 작업 재대기 | 재시도 횟수·오류 초기화 |
 | `cancel-task ID` | 대기·재시도대기·차단 작업 취소 | |
 | `duplicate-task ID` | 작업 복제(새 waiting 작업) | |
@@ -45,6 +46,40 @@
 | `archive-task ID` | 성공(succeeded) 작업 보관 | |
 | `delete-task ID` | 작업+실행 기록 영구 삭제 | reserved/running은 불가, 의존 작업 있으면 불가 |
 | `set-agent AGENT STATE` | 에이전트 수동 상태 설정 | `claude|codex` × `available|cooldown|disabled`, cooldown은 `--until "YYYY-MM-DD HH:MM"` |
+
+## 토큰 기반 배치 계획
+
+`plan-batch` 입력은 `budgets`와 하나 이상의 `tasks`를 가진 JSON 객체다. 각 작업은
+`TaskDraft` 필드명(`project_path`, `agent_policy`, `approval_mode`, `dependency_ids` 등)을
+사용하고 `estimated_tokens`는 반드시 양수여야 한다.
+
+```json
+{
+  "budgets": {"claude": 120000, "codex": 80000},
+  "tasks": [
+    {
+      "title": "설계 검토",
+      "prompt": "설계와 구현의 불일치를 찾으세요.",
+      "project_path": "C:/projects/sample",
+      "agent_policy": "any",
+      "estimated_tokens": 25000,
+      "approval_mode": "auto"
+    }
+  ]
+}
+```
+
+- 전용 작업은 지정된 에이전트 예산에서 먼저 차감한다.
+- `any` 작업은 예상 토큰 내림차순으로 처리하고, 등록 후 예산 사용률이 낮은 쪽에 배치한다.
+- 같은 사용률이면 Claude, 같은 크기면 JSON에서 먼저 나온 작업이 우선한다.
+- 결과 작업은 `any`가 아니라 결정된 `claude`/`codex` 정책으로 저장된다.
+- `--dry-run`은 DB를 변경하지 않는다. 실제 등록은 전체 배치를 한 번만 커밋한다.
+- 배치 내부 작업은 아직 서로를 참조할 ID가 없으므로 `dependency_ids`에는 기존 작업 ID만 쓴다.
+
+```powershell
+... plan-batch workload.json --dry-run --json
+... plan-batch workload.json --json
+```
 
 ## 상태 머신 (어떤 명령이 통하는지)
 

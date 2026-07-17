@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
             f"상태: {enum_value(getattr(task, 'status', ''))}",
             f"담당 AI: {enum_value(assigned)}",
             f"우선순위: {getattr(task, 'priority', '')}",
+            f"예상 토큰: {getattr(task, 'estimated_tokens', 0):,}",
             f"프로젝트: {getattr(task, 'project_path', '')}",
             f"재시도: {getattr(task, 'retry_count', 0)} / {getattr(task, 'max_retries', 0)}",
         ]
