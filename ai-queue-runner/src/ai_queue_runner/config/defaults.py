@@ -33,6 +33,7 @@ class AppSection(StrictModel):
     allowed_project_roots: list[Path] = Field(default_factory=list)
     db_path: Path = Path("data/queue.db")
     logs_dir: Path = Path("logs")
+    worktrees_dir: Path = Path("worktrees")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
@@ -50,9 +51,9 @@ class SchedulerSection(StrictModel):
     dedicated_wait_extra_bonus: int = Field(default=10, ge=0)
     dedicated_priority_preempt: int = Field(default=90, ge=0, le=100)
     reserved_timeout_minutes: int = Field(default=10, ge=1)
-    # AIDEV-NOTE: only "exclusive" is implemented in v1 (plan §5.6); widen the
-    # Literal when git_branch/none modes land.
     project_lock_mode: Literal["exclusive"] = "exclusive"
+    worktree_parallel_enabled: bool = False
+    worktree_git_timeout_seconds: int = Field(default=30, ge=1)
 
 
 class AgentSection(StrictModel):

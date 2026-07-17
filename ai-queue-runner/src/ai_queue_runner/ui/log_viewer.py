@@ -68,7 +68,16 @@ class LogViewer(QWidget):
         self._agent = str(agent) or None
         exit_code = getattr(run, "exit_code", None)
         exit_text = "실행 중" if exit_code is None else f"종료 코드 {exit_code}"
-        self.run_label.setText(f"시도 {attempt} · {str(agent).title()} · {exit_text}")
+        worktree_branch = getattr(run, "worktree_branch", None)
+        worktree_path = getattr(run, "worktree_path", None)
+        worktree_text = (
+            f" · {worktree_branch} · {worktree_path}"
+            if worktree_branch and worktree_path
+            else ""
+        )
+        self.run_label.setText(
+            f"시도 {attempt} · {str(agent).title()} · {exit_text}{worktree_text}"
+        )
         self.refresh()
 
     def clear(self) -> None:

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -79,10 +79,37 @@ def _migrate_v3_to_v4(session: Session) -> None:
     )
 
 
+def _migrate_v4_to_v5(session: Session) -> None:
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "use_worktree" not in task_columns:
+        session.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN use_worktree BOOLEAN NOT NULL DEFAULT 0"
+            )
+        )
+    if "worktree_path" not in task_columns:
+        session.execute(text("ALTER TABLE tasks ADD COLUMN worktree_path TEXT"))
+    if "worktree_branch" not in task_columns:
+        session.execute(text("ALTER TABLE tasks ADD COLUMN worktree_branch TEXT"))
+
+    run_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(task_runs)")).mappings()
+    }
+    if "worktree_path" not in run_columns:
+        session.execute(text("ALTER TABLE task_runs ADD COLUMN worktree_path TEXT"))
+    if "worktree_branch" not in run_columns:
+        session.execute(text("ALTER TABLE task_runs ADD COLUMN worktree_branch TEXT"))
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
+    4: _migrate_v4_to_v5,
 }
 
 

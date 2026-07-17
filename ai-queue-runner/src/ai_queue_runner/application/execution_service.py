@@ -73,7 +73,22 @@ class ExecutionService:
             self._record_invalid_path(session, task, adapter, exc)
             raise
         task.project_path = str(canonical_project_path)
-        command = adapter.build_command(task)
+        execution_path = canonical_project_path
+        if task.use_worktree:
+            if not task.worktree_path or not task.worktree_branch:
+                raise ValueError("reserved worktree task has no prepared worktree metadata")
+            execution_path = Path(task.worktree_path).resolve()
+            managed_root = self._config.app.worktrees_dir.resolve()
+            if not execution_path.is_dir() or not execution_path.is_relative_to(managed_root):
+                raise ValueError(f"prepared worktree path is unavailable: {execution_path}")
+
+        original_project_path = task.project_path
+        task.project_path = str(execution_path)
+        try:
+            command = adapter.build_command(task)
+            stdin_text = adapter.build_stdin(task)
+        finally:
+            task.project_path = original_project_path
         attempt = task.retry_count + 1
         task_log_dir = self._config.app.logs_dir / "tasks" / str(task.id)
         stdout_path = task_log_dir / f"attempt_{attempt}.stdout.log"
@@ -95,23 +110,32 @@ class ExecutionService:
                 stdout_path=str(stdout_path),
                 stderr_path=str(stderr_path),
                 started_at=started_at,
+                worktree_path=(str(execution_path) if task.use_worktree else None),
+                worktree_branch=(task.worktree_branch if task.use_worktree else None),
             )
         )
         # AIDEV-NOTE: this commit must precede process spawn; stale-reservation
         # recovery may otherwise release a task whose CLI process already started.
         session.commit()
+        if run.worktree_path and run.worktree_branch:
+            logger.info(
+                "task %s running in worktree: branch=%s path=%s",
+                task.id,
+                run.worktree_branch,
+                run.worktree_path,
+            )
 
         try:
             result = await self._process_runner.run(
                 command,
-                cwd=Path(task.project_path),
+                cwd=execution_path,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
                 timeout_seconds=self._timeout_seconds(adapter),
                 env=None,
                 # AIDEV-NOTE: prompts travel over stdin to avoid Windows command-line
                 # limits and to keep task text out of the persisted command array.
-                stdin_text=adapter.build_stdin(task),
+                stdin_text=stdin_text,
                 on_started=lambda pid, process_started_at: self._record_started(
                     session,
                     task,

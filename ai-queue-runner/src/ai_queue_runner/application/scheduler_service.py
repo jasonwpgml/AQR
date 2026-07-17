@@ -36,6 +36,7 @@ def reserve_next_task(
     now: datetime | None = None,
     max_attempts: int = 3,
     eligible_agents: Collection[AgentName] | None = None,
+    exclude_task_ids: Collection[int] = (),
 ) -> Task | None:
     """Atomically pick and reserve the best task for ``agent`` (plan §5.4).
 
@@ -59,9 +60,10 @@ def reserve_next_task(
                 now_,
                 eligible_agents=eligible_agents,
             )
-            tasks = session.scalars(
-                select(Task).where(Task.status.in_(_RESERVATION_SCOPE))
-            ).all()
+            tasks_stmt = select(Task).where(Task.status.in_(_RESERVATION_SCOPE))
+            if exclude_task_ids:
+                tasks_stmt = tasks_stmt.where(Task.id.not_in(exclude_task_ids))
+            tasks = session.scalars(tasks_stmt).all()
             candidate = scheduler.select_task(
                 tasks,
                 agent,
@@ -72,7 +74,17 @@ def reserve_next_task(
             if candidate is None:
                 session.rollback()
                 return None
-            if _claim_task(session, candidate, agent, now_):
+            use_worktree = candidate.use_worktree or (
+                config.scheduler.worktree_parallel_enabled
+                and _project_is_locked(tasks, candidate)
+            )
+            if _claim_task(
+                session,
+                candidate,
+                agent,
+                now_,
+                use_worktree=use_worktree,
+            ):
                 return candidate
             session.rollback()  # lost the race; re-select on next attempt
         except OperationalError:
@@ -122,7 +134,17 @@ def reserve_specific_task(
         if candidate is None or candidate.id != task_id:
             session.rollback()
             return None
-        if _claim_task(session, candidate, agent, now):
+        use_worktree = candidate.use_worktree or (
+            config.scheduler.worktree_parallel_enabled
+            and _project_is_locked(locking_tasks, candidate)
+        )
+        if _claim_task(
+            session,
+            candidate,
+            agent,
+            now,
+            use_worktree=use_worktree,
+        ):
             return candidate
         session.rollback()
     except OperationalError:
@@ -135,24 +157,29 @@ def _claim_task(
     candidate: Task,
     agent: AgentName,
     now: datetime,
+    *,
+    use_worktree: bool,
 ) -> bool:
     locking_task = aliased(Task)
+    project_lock_exists = exists().where(
+        locking_task.id != candidate.id,
+        locking_task.project_path == candidate.project_path,
+        locking_task.status.in_(LOCKING_STATUSES),
+    )
+    claim_conditions = [Task.id == candidate.id, Task.status == TaskStatus.WAITING]
+    if not candidate.use_worktree:
+        # AIDEV-NOTE: a new isolated reservation must observe a conflicting lock in
+        # the same CAS; otherwise it follows the original NOT EXISTS serial path.
+        claim_conditions.append(project_lock_exists if use_worktree else ~project_lock_exists)
     task_claimed = session.execute(
         update(Task)
-        .where(
-            Task.id == candidate.id,
-            Task.status == TaskStatus.WAITING,
-            ~exists().where(
-                locking_task.id != candidate.id,
-                locking_task.project_path == candidate.project_path,
-                locking_task.status.in_(LOCKING_STATUSES),
-            ),
-        )
+        .where(*claim_conditions)
         .values(
             status=TaskStatus.RESERVED,
             assigned_agent=agent,
             reserved_at=now,
             updated_at=now,
+            use_worktree=use_worktree,
         )
         .execution_options(synchronize_session=False)
     ).rowcount
@@ -169,6 +196,15 @@ def _claim_task(
     session.commit()
     session.refresh(candidate)
     return True
+
+
+def _project_is_locked(tasks: Iterable[Task], candidate: Task) -> bool:
+    return any(
+        task.id != candidate.id
+        and task.project_path == candidate.project_path
+        and task.status in LOCKING_STATUSES
+        for task in tasks
+    )
 
 
 class SchedulerService:
@@ -268,7 +304,11 @@ class SchedulerService:
             and task.agent_policy in (AgentPolicy(agent.value), AgentPolicy.ANY)
             and task.retry_count <= task.max_retries
             and all(dependency.status is TaskStatus.SUCCEEDED for dependency in task.depends_on)
-            and task.project_path not in locked_projects
+            and (
+                task.project_path not in locked_projects
+                or task.use_worktree
+                or self._config.scheduler.worktree_parallel_enabled
+            )
             and not self._fallback_is_preferred_elsewhere(
                 task,
                 agent,

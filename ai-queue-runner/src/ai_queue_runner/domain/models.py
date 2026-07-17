@@ -11,6 +11,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Integer,
@@ -109,6 +110,9 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
     tags: Mapped[list[str]] = mapped_column("tags_json", JSON, default=list)
+    use_worktree: Mapped[bool] = mapped_column(Boolean, default=False)
+    worktree_path: Mapped[str | None] = mapped_column(Text, default=None)
+    worktree_branch: Mapped[str | None] = mapped_column(Text, default=None)
 
     depends_on: Mapped[list[Task]] = relationship(
         secondary=TaskDependency.__table__,
@@ -171,6 +175,8 @@ class TaskRun(Base):
     fallback_to_agent: Mapped[AgentName | None] = mapped_column(
         _enum(AgentName), default=None
     )
+    worktree_path: Mapped[str | None] = mapped_column(Text, default=None)
+    worktree_branch: Mapped[str | None] = mapped_column(Text, default=None)
 
     task: Mapped[Task] = relationship(back_populates="runs")
 

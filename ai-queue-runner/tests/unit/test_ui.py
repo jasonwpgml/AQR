@@ -409,6 +409,24 @@ def test_approval_dialog_shows_exact_execution_inputs(app):
     assert dialog.prompt_text == "wrapped prompt"
 
 
+def test_approval_dialog_uses_worktree_execution_path(app):
+    task = make_task(
+        assigned_agent=AgentName.CODEX,
+        worktree_path="C:/worktrees/T1",
+        worktree_branch="aqr/T1",
+    )
+    adapter = SimpleNamespace(
+        build_command=lambda value: ["codex", "--cd", value.project_path],
+        build_stdin=lambda value: f"work inside {value.project_path}",
+    )
+
+    dialog = ApprovalDialog(task, adapter)
+
+    assert dialog.path_value.text() == task.worktree_path
+    assert task.worktree_path in dialog.command_text
+    assert task.worktree_path in dialog.prompt_text
+
+
 class FakeTaskService:
     def __init__(self, tasks):
         self.tasks = tasks

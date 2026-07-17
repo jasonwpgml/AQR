@@ -19,6 +19,7 @@ flowchart TB
         RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
         SCHED[SchedulerService\n후보·fallback 우선순위·원자적 예약]
         EXEC[ExecutionService\n실행 결과·재시도·fallback 기록]
+        WORKTREE[WorktreeService\n격리 준비·직렬 폴백·명시적 정리]
         RECUR[RecurrenceService\n성공 후 다음 회차 멱등 생성]
         RECOV[RecoveryService\n예약/PID/재시도 복구]
     end
@@ -36,6 +37,7 @@ flowchart TB
         PROC[ProcessRunner\nstdin·로그·프로세스 트리]
         ADAPTER[Claude/Codex Adapter]
         POLICY[허용 경로 정책]
+        GIT[GitWorktreeManager\n결정적 생성·재사용·안전 정리]
         OPS[백업·Windows 시작 프로그램]
     end
 
@@ -44,6 +46,7 @@ flowchart TB
     MW --> RUNTIME
     RUNTIME --> SCHED
     RUNTIME --> EXEC
+    RUNTIME --> WORKTREE
     RUNTIME --> RECOV
     SCHED --> REPO
     SCHED --> SCORE
@@ -52,6 +55,8 @@ flowchart TB
     EXEC --> PROC
     EXEC --> ADAPTER
     EXEC --> POLICY
+    WORKTREE --> REPO
+    WORKTREE --> GIT
     TASK --> REPO
     PLAN --> TASK
     TASK --> POLICY
@@ -85,6 +90,9 @@ erDiagram
         datetime reserved_at
         datetime created_at
         json tags_json
+        boolean use_worktree
+        text worktree_path
+        text worktree_branch
     }
     task_dependencies {
         int task_id PK,FK
@@ -109,6 +117,8 @@ erDiagram
         text stderr_path
         text error_type
         text fallback_to_agent
+        text worktree_path
+        text worktree_branch
     }
     settings {
         text key PK
@@ -128,6 +138,9 @@ DB 시간은 SQLite의 제약 때문에 naive UTC로 저장하고 UI 경계에�
 스키마 v4는 `tasks.recurrence_interval_days`와 `recurrence_source_task_id`를 추가합니다.
 후자는 원본 회차당 하나만 존재할 수 있는 유일 키여서 완료 이벤트 재처리에도 다음 회차가
 중복 생성되지 않습니다.
+스키마 v5는 `tasks`에 격리 실행 여부·경로·브랜치를, `task_runs`에 실제 실행 당시의
+worktree 경로·브랜치를 추가합니다. 작업 행은 현재/재시도 위치를, 실행 행은 삭제 후에도
+남는 이력을 제공하며 자동 머지 상태는 저장하거나 추론하지 않습니다.
 
 ## 3. 작업 상태 전이
 
@@ -166,10 +179,14 @@ flowchart TD
     AG --> FILTER[상태·시각·정책·선행 작업·프로젝트 잠금]
     FILTER --> SCORE[우선순위 + 대기 + 전용 + 의존 보너스 - 재시도 패널티]
     SCORE --> CAS[한 트랜잭션의 CAS 예약\ntask + agent_state]
-    CAS --> APPROVE{전역 자동 실행 AND 작업 auto?}
+    CAS --> ISOLATE{동일 프로젝트 잠금 충돌?}
+    ISOLATE -- 아니오 --> APPROVE
+    ISOLATE -- "예 + worktree opt-in" --> PREP[aqr/T&lt;id&gt; 브랜치 + 결정적 worktree 준비]
+    PREP -- 성공 --> APPROVE{전역 자동 실행 AND 작업 auto?}
+    PREP -- 비Git/생성 실패 --> WAIT[waiting 복구\nexclusive 직렬 폴백]
     APPROVE -- 아니오 --> USER[승인 창]
     USER -- 승인 --> RUN
-    USER -- 거절 --> WAIT[waiting 복구]
+    USER -- 거절 --> WAIT
     APPROVE -- 예 --> RUN[CLI 실행]
     RUN --> RESULT{결과 분류}
     RESULT --> DONE[succeeded/failed/retry_wait/blocked]
@@ -180,7 +197,20 @@ flowchart TD
     LIMIT --> FALLBACK
 ```
 
-예약은 `WHERE status='waiting'`, 동일 프로젝트의 `reserved/running` 행이 없다는 `NOT EXISTS`, `agent_states.current_task_id IS NULL` 조건을 둔 compare-and-swap UPDATE입니다. 두 에이전트가 같은 `any` 작업 또는 같은 프로젝트의 서로 다른 작업을 동시에 선택해도 한쪽만 성공합니다. `current_task_id`는 실행 시작이 아니라 예약 시점에 잡아 한 에이전트가 둘 이상의 작업을 보유하지 못하게 합니다.
+예약은 `WHERE status='waiting'`, `agent_states.current_task_id IS NULL`과 프로젝트 잠금 상태를
+같은 compare-and-swap UPDATE에서 검사합니다. 기본/off 경로는 기존 `NOT EXISTS`를 그대로
+사용합니다. opt-in 상태에서 충돌 후보를 격리 예약할 때만 반대로 잠금 행의 `EXISTS`를
+요구하고 `use_worktree`를 기록하므로, 선택 스냅샷 뒤 잠금이 사라지거나 생기는 경합도
+직렬/격리 경계를 잘못 넘지 않습니다. 두 에이전트가 같은 `any` 작업을 고르는 CAS와
+`current_task_id`의 에이전트당 단일 예약 불변식도 유지됩니다.
+
+격리 예약 직후 `WorktreeService`는 설정한 `worktrees_dir/T<id>`와 `aqr/T<id>`를
+생성하거나 기존 동일 worktree를 재사용합니다. 원 프로젝트가 Git 저장소가 아니거나 Git
+명령이 실패하면 예약과 에이전트 점유를 즉시 해제해 기존 exclusive 대기로 돌아갑니다.
+성공하면 어댑터 cwd와 프롬프트의 프로젝트 경로만 worktree로 치환하고 원래 `project_path`는
+보존합니다. 실패·취소·재시작 뒤에도 worktree는 삭제하지 않아 다음 시도와 디버깅에
+재사용하며, worktree 디렉터리 자체는 DB 프로젝트 잠금으로 취급하지 않아 고아 checkout이
+스케줄링을 막지 않습니다.
 
 `any` 작업의 재시도 가능 실패가 설정 임계값(기본 1회)에 도달하면 `ExecutionService`가
 반대 AI를 `fallback_agent`로 기록합니다. `SchedulerService`는 그 AI가 설치되고 현재 사용
@@ -210,6 +240,7 @@ flowchart TD
 - Claude의 구조화 `rate_limit_event`는 `rate_limit_info.status=allowed`이면 정상으로 처리하고, 일반 제한 문자열은 비정상 종료에서만 보조 분류합니다.
 - `plan-batch`는 전용 작업을 먼저 예산에 반영하고 큰 `any` 작업부터 예상 사용률이 낮은 에이전트에 결정적으로 배치합니다.
 - 계획된 작업은 결정된 전용 정책으로 바꾼 뒤 `TaskService.create_batch()`의 단일 트랜잭션으로 저장합니다.
+- `cleanup-worktree ID`는 종료 상태 작업만 받으며 dirty 파일이나 프로젝트 HEAD에 포함되지 않은 브랜치 커밋이 있으면 삭제를 거부합니다. 통과해도 worktree만 제거하고 브랜치와 실행 이력은 남깁니다.
 
 ## 6. 주요 파일
 
@@ -221,11 +252,13 @@ flowchart TD
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |
 | `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback 결정·이력 기록 |
+| `application/worktree_service.py` | 격리 예약 준비·실패 시 exclusive 폴백·완료 worktree 정리 정책 |
 | `application/recurrence_service.py` | 성공한 반복 작업의 다음 회차를 원본 ID 기준으로 멱등 생성 |
 | `application/recovery_service.py` | 오래된 예약·재시도·고아 PID 복구 |
 | `infrastructure/adapters/` | 설치 확인, 안전한 명령 구성, 오류 분류 |
 | `infrastructure/process_runner.py` | 비동기 subprocess, stdin, 로그, 취소, 타임아웃 |
 | `infrastructure/path_policy.py` | 프로젝트 허용 루트 검증 |
+| `infrastructure/git_worktrees.py` | Git worktree/브랜치 결정적 생성·재사용과 미병합 보호 정리 |
 | `infrastructure/backup.py` | SQLite 온라인 백업과 무결성 검사 |
 | `config/exporter.py` | 유효 설정의 결정적 TOML 내보내기 |
 | `infrastructure/windows_startup.py` | HKCU Run 시작 프로그램 등록 |
@@ -238,6 +271,7 @@ flowchart TD
 - SQLite 연결마다 foreign key와 WAL을 활성화합니다.
 - 예약 타임아웃, 재시도 승격, 에이전트 쿨다운 해제는 매 틱 먼저 수행합니다.
 - 시작 시 `running` 작업의 마지막 PID를 검사하고 대기 복구 또는 실패 처리를 사용자에게 묻습니다.
+- 복구된 작업의 `use_worktree`와 경로는 유지하고 다음 예약에서 같은 브랜치/check-out을 재검증·재사용합니다.
 - 온라인 백업은 SQLite backup API를 쓰고 결과에 `PRAGMA integrity_check`를 실행합니다.
 - 설정 내보내기는 검증과 상대 경로 해석을 마친 유효 값을 기록합니다.
 - Windows 시작 프로그램은 현재 사용자 범위의 HKCU Run 키만 사용하며 명시적 옵션입니다.
