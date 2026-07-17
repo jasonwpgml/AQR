@@ -32,3 +32,4 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T027 token-aware workload planning, deterministic Claude/Codex distribution, and atomic batch enqueue
 [done] T028 plan cleanup: mark implemented adapters and usage reset parsing as complete
 [done] T029 automatic fallback of failed Any-policy tasks to the other agent
+[done] T030 recurring tasks enqueue one scheduled successor after successful completion

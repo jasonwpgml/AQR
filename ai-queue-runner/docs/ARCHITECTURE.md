@@ -19,6 +19,7 @@ flowchart TB
         RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
         SCHED[SchedulerService\n후보·fallback 우선순위·원자적 예약]
         EXEC[ExecutionService\n실행 결과·재시도·fallback 기록]
+        RECUR[RecurrenceService\n성공 후 다음 회차 멱등 생성]
         RECOV[RecoveryService\n예약/PID/재시도 복구]
     end
 
@@ -47,6 +48,7 @@ flowchart TB
     SCHED --> REPO
     SCHED --> SCORE
     EXEC --> REPO
+    EXEC --> RECUR --> REPO
     EXEC --> PROC
     EXEC --> ADAPTER
     EXEC --> POLICY
@@ -77,6 +79,8 @@ erDiagram
         text approval_mode
         int max_retries
         int retry_count
+        int recurrence_interval_days
+        int recurrence_source_task_id FK,UK
         datetime not_before
         datetime reserved_at
         datetime created_at
@@ -113,6 +117,7 @@ erDiagram
 
     tasks ||--o{ task_dependencies : "선행 작업"
     tasks ||--o{ task_runs : "실행 기록"
+    tasks o|--o| tasks : "다음 반복 회차"
     tasks |o--o| agent_states : "현재 예약/실행"
 ```
 
@@ -120,6 +125,9 @@ DB 시간은 SQLite의 제약 때문에 naive UTC로 저장하고 UI 경계에�
 스키마 v2는 기존 v1 DB의 `tasks`에 `estimated_tokens`를 기본값 0으로 추가하며,
 일반 작업의 0은 추정치 미지정을 뜻합니다. 스키마 v3는 `tasks.fallback_agent`와
 `task_runs.fallback_to_agent`를 추가해 현재 우선 대상과 에이전트 전환 이력을 보존합니다.
+스키마 v4는 `tasks.recurrence_interval_days`와 `recurrence_source_task_id`를 추가합니다.
+후자는 원본 회차당 하나만 존재할 수 있는 유일 키여서 완료 이벤트 재처리에도 다음 회차가
+중복 생성되지 않습니다.
 
 ## 3. 작업 상태 전이
 
@@ -165,6 +173,7 @@ flowchart TD
     APPROVE -- 예 --> RUN[CLI 실행]
     RUN --> RESULT{결과 분류}
     RESULT --> DONE[succeeded/failed/retry_wait/blocked]
+    DONE -->|succeeded + 반복 규칙| NEXT[다음 회차 waiting 생성\nnot_before = 완료 시각 + N일]
     RESULT --> LIMIT[사용량 제한: agent cooldown + task waiting]
     RESULT --> FALLBACK[Any 재시도: 반대 AI 우선 + 실행 기록]
     FALLBACK --> FILTER
@@ -179,6 +188,15 @@ flowchart TD
 대상 AI가 쿨다운·비활성·미설치이면 기존 AI도 다시 후보가 될 수 있어 작업이 영구 고정되지
 않습니다. 사용량 제한은 `retry_count`를 올리지 않고 즉시 같은 우선순위를 설정합니다.
 전용 정책과 `fallback_enabled=false`에서는 이 규칙을 적용하지 않습니다.
+
+반복 규칙은 nullable 양의 일수로 표현하며 1일은 매일, 7일은 매주, 나머지는 N일
+간격입니다. `ExecutionService`가 성공 상태와 완료 시각을 기록한 뒤 같은 DB 트랜잭션에서
+`RecurrenceService`를 호출합니다. 후속 작업은 제목·프롬프트·프로젝트·AI 정책·우선순위·
+토큰 추정·승인·재시도·태그·선행 작업·반복 규칙을 복사하고 실행 상태와 재시도 횟수는
+초기화합니다. 성공과 후속 작업이 함께 커밋되므로 크래시 뒤 둘 중 하나만 남지 않으며,
+`recurrence_source_task_id` 유일 제약과 기존 행 조회가 이벤트 재처리를 멱등하게 만듭니다.
+실패·차단·취소 경로에서는 이 서비스를 호출하지 않습니다. 후속 작업의 `not_before`는
+기존 달력 조회에 그대로 포함됩니다.
 
 ## 5. CLI 안전 경계
 
@@ -203,6 +221,7 @@ flowchart TD
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |
 | `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback 결정·이력 기록 |
+| `application/recurrence_service.py` | 성공한 반복 작업의 다음 회차를 원본 ID 기준으로 멱등 생성 |
 | `application/recovery_service.py` | 오래된 예약·재시도·고아 PID 복구 |
 | `infrastructure/adapters/` | 설치 확인, 안전한 명령 구성, 오류 분류 |
 | `infrastructure/process_runner.py` | 비동기 subprocess, stdin, 로그, 취소, 타임아웃 |

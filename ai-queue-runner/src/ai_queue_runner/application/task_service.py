@@ -46,6 +46,7 @@ class TaskDraft(BaseModel):
     approval_mode: ApprovalMode = ApprovalMode.CONFIRM
     max_retries: int = Field(default=2, ge=0)
     retry_delay_minutes: int = Field(default=10, ge=0)
+    recurrence_interval_days: int | None = Field(default=None, ge=1)
     not_before: datetime | None = None
     tags: list[str] = Field(default_factory=list)
     dependency_ids: list[int] = Field(default_factory=list)
@@ -89,6 +90,8 @@ class TaskView:
     max_retries: int
     retry_count: int
     retry_delay_minutes: int
+    recurrence_interval_days: int | None
+    recurrence_source_task_id: int | None
     not_before: datetime | None
     reserved_at: datetime | None
     started_at: datetime | None
@@ -234,6 +237,7 @@ class TaskService:
                 approval_mode=source.approval_mode,
                 max_retries=source.max_retries,
                 retry_delay_minutes=source.retry_delay_minutes,
+                recurrence_interval_days=source.recurrence_interval_days,
                 not_before=source.not_before,
                 tags=[tag for tag in source.tags if tag != _ARCHIVED_TAG],
                 dependency_ids=[task.id for task in source.depends_on],
@@ -356,6 +360,7 @@ def _task_values(draft: TaskDraft, canonical_path: Path) -> dict[str, object]:
         "approval_mode": draft.approval_mode,
         "max_retries": draft.max_retries,
         "retry_delay_minutes": draft.retry_delay_minutes,
+        "recurrence_interval_days": draft.recurrence_interval_days,
         "not_before": draft.not_before,
         "tags": list(draft.tags),
     }
@@ -386,6 +391,8 @@ def _to_task_view(task: Task) -> TaskView:
         max_retries=task.max_retries,
         retry_count=task.retry_count,
         retry_delay_minutes=task.retry_delay_minutes,
+        recurrence_interval_days=task.recurrence_interval_days,
+        recurrence_source_task_id=task.recurrence_source_task_id,
         not_before=task.not_before,
         reserved_at=task.reserved_at,
         started_at=task.started_at,

@@ -43,3 +43,4 @@ D038 Token workload plans use explicit per-batch Claude/Codex budgets; dedicated
 D039 `estimated_tokens=0` means unknown for ordinary tasks, but every `plan-batch` task requires a positive estimate; planned Any tasks persist as the selected dedicated policy
 D040 Batch enqueue validates the complete workload then commits all tasks once; `dependency_ids` in a batch may reference existing database tasks, not sibling tasks that do not yet have IDs
 D041 Any-task fallback stores the current preference on `tasks` and the transition target on the failed `task_run`; the scheduler excludes the previous agent only while the preferred installed agent is available, preserving deterministic CAS reservation without permanently pinning work
+D042 Recurrence is a nullable positive day interval (1=daily, 7=weekly); ExecutionService creates the successor in the success transaction, and a unique recurrence_source_task_id makes each completion idempotent

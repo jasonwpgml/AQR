@@ -10,6 +10,7 @@ from tests.fakes import FakeAdapter
 
 from ai_queue_runner.application.execution_service import ExecutionService
 from ai_queue_runner.application.recovery_service import promote_retry_tasks
+from ai_queue_runner.application.recurrence_service import enqueue_next_occurrence
 from ai_queue_runner.application.scheduler_service import reserve_next_task
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
@@ -112,6 +113,77 @@ async def test_success_persists_run_logs_and_releases_agent(
     state = AgentStateRepository(session).get(adapter.name)
     assert state.status is AgentStatus.AVAILABLE
     assert state.current_task_id is None
+
+
+async def test_recurring_success_enqueues_next_occurrence_with_copied_settings(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("print('recurring success')")
+
+    task, _run = await execute_reserved(
+        session,
+        config,
+        project_path,
+        adapter,
+        title="weekly report",
+        prompt="prepare the report",
+        agent_policy="any",
+        priority=83,
+        estimated_tokens=12_000,
+        approval_mode="auto",
+        max_retries=4,
+        retry_delay_minutes=17,
+        recurrence_interval_days=7,
+        tags=["report", "weekly"],
+    )
+
+    successor = TaskRepository(session).get_next_occurrence(task.id)
+    assert successor is not None
+    assert successor.status is TaskStatus.WAITING
+    assert successor.recurrence_source_task_id == task.id
+    assert successor.not_before == task.finished_at + timedelta(days=7)
+    assert successor.title == task.title
+    assert successor.prompt == task.prompt
+    assert successor.project_path == task.project_path
+    assert successor.agent_policy is task.agent_policy
+    assert successor.priority == task.priority
+    assert successor.estimated_tokens == task.estimated_tokens
+    assert successor.approval_mode is task.approval_mode
+    assert successor.max_retries == task.max_retries
+    assert successor.retry_delay_minutes == task.retry_delay_minutes
+    assert successor.recurrence_interval_days == 7
+    assert successor.tags == task.tags
+    assert successor.assigned_agent is None
+    assert successor.retry_count == 0
+
+
+async def test_recurring_completion_replay_reuses_the_single_successor(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("print('done once')")
+    task, _run = await execute_reserved(
+        session,
+        config,
+        project_path,
+        adapter,
+        recurrence_interval_days=1,
+    )
+    first = TaskRepository(session).get_next_occurrence(task.id)
+
+    replayed = enqueue_next_occurrence(
+        session,
+        task,
+        completed_at=task.finished_at,
+    )
+    session.commit()
+
+    assert first is not None
+    assert replayed.id == first.id
+    assert len(TaskRepository(session).list()) == 2
 
 
 async def test_success_stores_summary_from_optional_adapter_hook(
@@ -329,6 +401,47 @@ async def test_failure_without_retries_enters_failed(
     assert task.finished_at is not None
     assert run.exit_code == 9
     assert run.error_type is ErrorType.UNKNOWN
+
+
+async def test_recurring_failure_does_not_enqueue_next_occurrence(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    adapter = python_adapter("import sys; sys.exit(9)")
+
+    task, _run = await execute_reserved(
+        session,
+        config,
+        project_path,
+        adapter,
+        max_retries=0,
+        recurrence_interval_days=1,
+    )
+
+    assert task.status is TaskStatus.FAILED
+    assert TaskRepository(session).get_next_occurrence(task.id) is None
+
+
+def test_cancelled_recurring_task_does_not_enqueue_next_occurrence(
+    session,
+    project_path: Path,
+) -> None:
+    repo = TaskRepository(session)
+    task = repo.add(
+        Task(
+            title="cancel recurring",
+            prompt="do not continue",
+            project_path=str(project_path),
+            agent_policy="any",
+            recurrence_interval_days=1,
+        )
+    )
+    repo.set_status(task, TaskStatus.CANCELLED)
+    task.finished_at = utcnow()
+    session.commit()
+
+    assert repo.get_next_occurrence(task.id) is None
 
 
 async def test_structured_error_marker_overrides_zero_exit(

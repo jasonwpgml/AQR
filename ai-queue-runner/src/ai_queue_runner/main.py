@@ -76,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_task.add_argument("--max-retries", type=int, default=2, metavar="N")
     add_task.add_argument(
+        "--repeat",
+        metavar="daily|weekly|N",
+        help="enqueue a new occurrence after success; N is an interval in days",
+    )
+    add_task.add_argument(
         "--tag",
         action="extend",
         nargs="+",
@@ -146,6 +151,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     update_task.add_argument("--max-retries", type=int, metavar="N")
     update_task.add_argument("--retry-delay", type=int, metavar="MINUTES")
+    update_task.add_argument(
+        "--repeat",
+        metavar="daily|weekly|N",
+        help="set the recurrence interval",
+    )
+    update_task.add_argument(
+        "--clear-repeat",
+        action="store_true",
+        help="stop the recurring chain after this task",
+    )
     update_task.add_argument(
         "--tag",
         action="extend",

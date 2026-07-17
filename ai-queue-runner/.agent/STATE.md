@@ -1,12 +1,12 @@
 ```yaml
 phase: 7
-current_goal: "automatic fallback for failed Any-policy tasks"
-active_task: "T029"
+current_goal: "recurring tasks enqueue the next occurrence after success"
+active_task: "T030"
 owner: codex
 status: done
 blocked_by: null
 last_verified:
   command: "..\\.venv\\Scripts\\python -m pytest -q && ..\\.venv\\Scripts\\python -m ruff check src tests"
-  result: "270 passed in 20.78s; All checks passed!"
+  result: "277 passed in 25.47s; All checks passed!"
 next: "Claude review; commit when approved"
 ```

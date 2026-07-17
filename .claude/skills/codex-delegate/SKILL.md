@@ -20,6 +20,7 @@ codex exec -C "C:/Users/Admin/Desktop/AQR/ai-queue-runner" -s danger-full-access
   -o "<scratchpad>/t###_last.txt" - < ".agent/TASK_T###.md" > "<scratchpad>/t###_run.log" 2>&1
 ```
 - 백그라운드(run_in_background)로 실행하고 완료 알림을 기다린다. stdin은 반드시 `- < file` (인자로만 주면 멈춤). 파이프 앞에 다른 명령을 붙이면 허용 규칙에 안 걸림.
+- Codex가 편집 중인 트리에서 소크 등 장기 pytest 루프를 병행하지 말 것 — 편집 중간 상태를 잡아 가짜 실패가 난다. 소크는 커밋 완료 후 시작.
 - 모델: 중요·복잡 작업은 옵션 생략(기본 gpt-5.6-sol xhigh). 덜 중요하면 `-m gpt-5.5 -c model_reasoning_effort=medium`.
 
 ## 4. 완료 후 (구현 우선 정책)
