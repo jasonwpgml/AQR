@@ -329,12 +329,15 @@ def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
         "auto",
         "--priority",
         90,
+        "--estimated-tokens",
+        1_500,
         as_json=True,
     )
     assert main(args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["approval_mode"] == "auto"
     assert payload["priority"] == 90
+    assert payload["estimated_tokens"] == 1_500
     assert payload["title"] == "원래 제목"
     assert payload["agent_policy"] == "any"
 
@@ -348,6 +351,98 @@ def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
     )
     assert main(conflict) == 2
     assert "함께 쓸 수 없습니다" in capsys.readouterr().err
+
+
+def test_cli_plan_batch_distributes_and_atomically_enqueues_tasks(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    project = allowed_root / "project"
+    project.mkdir()
+    plan_path = tmp_path / "workload.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "budgets": {"claude": 1_000, "codex": 1_000},
+                "tasks": [
+                    {
+                        "title": "large",
+                        "prompt": "large work",
+                        "project_path": str(project),
+                        "agent_policy": "any",
+                        "estimated_tokens": 700,
+                        "approval_mode": "auto",
+                    },
+                    {
+                        "title": "small",
+                        "prompt": "small work",
+                        "project_path": str(project),
+                        "agent_policy": "any",
+                        "estimated_tokens": 300,
+                        "approval_mode": "auto",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(cli_args(config_path, "plan-batch", plan_path, "--json")) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["enqueued"] is True
+    assert payload["assigned_tokens"] == {"claude": 700, "codex": 300}
+    assert [task["assigned_agent"] for task in payload["tasks"]] == [
+        "claude",
+        "codex",
+    ]
+    assert all(task["id"] is not None for task in payload["tasks"])
+
+    config = load_config(config_path)
+    engine = create_db_engine(config.app.db_path)
+    service = TaskService(make_session_factory(engine), config)
+    stored = service.list()
+    assert [task.estimated_tokens for task in stored] == [700, 300]
+    assert [task.agent_policy.value for task in stored] == ["claude", "codex"]
+    engine.dispose()
+
+
+def test_cli_plan_batch_dry_run_and_overflow_leave_database_empty(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    project = allowed_root / "project"
+    project.mkdir()
+    plan_path = tmp_path / "workload.json"
+
+    def write_plan(tokens):
+        plan_path.write_text(
+            json.dumps(
+                {
+                    "budgets": {"claude": 100, "codex": 100},
+                    "tasks": [
+                        {
+                            "title": "planned",
+                            "prompt": "work",
+                            "project_path": str(project),
+                            "estimated_tokens": tokens,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_plan(100)
+    assert main(
+        cli_args(config_path, "plan-batch", plan_path, "--dry-run", "--json")
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["enqueued"] is False
+
+    write_plan(201)
+    assert main(cli_args(config_path, "plan-batch", plan_path, "--json")) == 2
+    assert "remaining token budgets" in capsys.readouterr().err
+
+    config = load_config(config_path)
+    engine = create_db_engine(config.app.db_path)
+    assert TaskService(make_session_factory(engine), config).list() == []
+    engine.dispose()
 
 
 def test_cli_move_top_duplicate_archive_and_delete(tmp_path, capsys):

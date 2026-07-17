@@ -6,12 +6,14 @@ import argparse
 import json
 from collections import Counter
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from ai_queue_runner.application.agent_service import AgentService, AgentView
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
+from ai_queue_runner.application.workload_planning import WorkloadBatch, plan_workload
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.enums import TaskStatus
 from ai_queue_runner.infrastructure.database import (
@@ -54,6 +56,7 @@ def _dispatch(
                 project_path=args.project,
                 agent_policy=args.agent,
                 priority=args.priority,
+                estimated_tokens=args.estimated_tokens,
                 approval_mode=args.approval,
                 max_retries=args.max_retries,
                 not_before=_parse_local_datetime(args.not_before),
@@ -144,6 +147,8 @@ def _dispatch(
         )
     if args.command == "queue-status":
         return _queue_status(args, service, agents, config)
+    if args.command == "plan-batch":
+        return _plan_batch(args, service)
     raise CliUsageError(f"지원하지 않는 명령입니다: {args.command}")
 
 
@@ -166,6 +171,11 @@ def _merged_draft(args: argparse.Namespace, service: TaskService) -> TaskDraft:
         project_path=current.project_path if args.project is None else args.project,
         agent_policy=current.agent_policy if args.agent is None else args.agent,
         priority=current.priority if args.priority is None else args.priority,
+        estimated_tokens=(
+            current.estimated_tokens
+            if args.estimated_tokens is None
+            else args.estimated_tokens
+        ),
         approval_mode=current.approval_mode if args.approval is None else args.approval,
         max_retries=current.max_retries if args.max_retries is None else args.max_retries,
         retry_delay_minutes=(
@@ -232,6 +242,65 @@ def _queue_status(
     return _json_or_text(payload, "\n".join(lines), args.json)
 
 
+def _plan_batch(args: argparse.Namespace, service: TaskService) -> str:
+    batch = _load_workload_batch(args.plan_path)
+    plan = plan_workload(batch)
+    created = [] if args.dry_run else service.create_batch(
+        [assignment.draft for assignment in plan.assignments]
+    )
+    records = []
+    for index, assignment in enumerate(plan.assignments):
+        task = None if args.dry_run else created[index]
+        records.append(
+            {
+                "input_index": assignment.input_index,
+                "id": None if task is None else task.id,
+                "title": assignment.draft.title,
+                "requested_agent_policy": assignment.requested_policy.value,
+                "assigned_agent": assignment.assigned_agent.value,
+                "estimated_tokens": assignment.draft.estimated_tokens,
+            }
+        )
+    payload = {
+        "enqueued": not args.dry_run,
+        "budgets": {
+            "claude": plan.budgets.claude,
+            "codex": plan.budgets.codex,
+        },
+        "assigned_tokens": {
+            agent.value: tokens for agent, tokens in plan.assigned_tokens.items()
+        },
+        "remaining_tokens": {
+            agent.value: tokens for agent, tokens in plan.remaining_tokens.items()
+        },
+        "tasks": records,
+    }
+    action = "계획" if args.dry_run else "원자적 등록"
+    lines = [
+        f"토큰 작업량 {action}: {len(records)}개",
+        f"Claude {plan.claude_tokens}/{plan.budgets.claude}, "
+        f"Codex {plan.codex_tokens}/{plan.budgets.codex}",
+    ]
+    lines.extend(
+        f"  {record['input_index']}: {record['assigned_agent']} "
+        f"{record['estimated_tokens']} tokens {record['title']}"
+        for record in records
+    )
+    return _json_or_text(payload, "\n".join(lines), args.json)
+
+
+def _load_workload_batch(path: Path) -> WorkloadBatch:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise CliUsageError(f"작업량 계획 파일을 읽을 수 없습니다: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise CliUsageError(
+            f"작업량 계획 파일이 올바른 JSON이 아닙니다: line {exc.lineno}"
+        ) from exc
+    return WorkloadBatch.model_validate(payload)
+
+
 def _agent_record(view: AgentView) -> dict[str, Any]:
     return {
         "agent": _enum_value(view.agent),
@@ -263,6 +332,7 @@ def _task_record(task: object) -> dict[str, Any]:
         "agent_policy": _enum_value(task.agent_policy),
         "assigned_agent": _enum_value(task.assigned_agent),
         "priority": int(task.priority),
+        "estimated_tokens": int(task.estimated_tokens),
         "status": _enum_value(task.status),
         "approval_mode": _enum_value(task.approval_mode),
         "max_retries": int(task.max_retries),

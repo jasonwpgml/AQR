@@ -95,6 +95,42 @@ def test_task_crud_returns_detached_immutable_dtos_and_dependencies(application)
     assert updated.priority == 95
 
 
+def test_create_batch_persists_estimates_in_one_transaction(
+    application, monkeypatch
+) -> None:
+    tasks, _agents, _factory, project = application
+    created = tasks.create_batch(
+        [
+            draft(project, title="first", estimated_tokens=1_200),
+            draft(project, title="second", estimated_tokens=800),
+        ]
+    )
+
+    assert [task.estimated_tokens for task in created] == [1_200, 800]
+    assert [task.title for task in tasks.list()] == ["first", "second"]
+
+    original_add = TaskRepository.add
+    calls = 0
+
+    def fail_on_second_add(repo, task):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated second insert failure")
+        return original_add(repo, task)
+
+    monkeypatch.setattr(TaskRepository, "add", fail_on_second_add)
+    with pytest.raises(RuntimeError, match="second insert failure"):
+        tasks.create_batch(
+            [
+                draft(project, title="rolled back first", estimated_tokens=500),
+                draft(project, title="rolled back second", estimated_tokens=500),
+            ]
+        )
+
+    assert [task.title for task in tasks.list()] == ["first", "second"]
+
+
 def test_activity_between_returns_tasks_with_events_inside_range(application) -> None:
     tasks, _agents, factory, project = application
     created_event = tasks.create(draft(project, title="created in range"))

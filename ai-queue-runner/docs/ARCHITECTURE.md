@@ -14,6 +14,7 @@ flowchart TB
 
     subgraph APP["application/ · 유스케이스"]
         TASK[TaskService\nCRUD·맨 위·보관]
+        PLAN[WorkloadPlanning\n토큰 예산·결정적 분배]
         AGENT[AgentService]
         RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
         SCHED[SchedulerService\n후보·점수·원자적 예약]
@@ -50,6 +51,7 @@ flowchart TB
     EXEC --> ADAPTER
     EXEC --> POLICY
     TASK --> REPO
+    PLAN --> TASK
     TASK --> POLICY
     REPO --> MODEL --> DB
     REPO --> TRANS
@@ -69,6 +71,7 @@ erDiagram
         text agent_policy
         text assigned_agent
         int priority
+        int estimated_tokens
         text status
         text approval_mode
         int max_retries
@@ -112,6 +115,8 @@ erDiagram
 ```
 
 DB 시간은 SQLite의 제약 때문에 naive UTC로 저장하고 UI 경계에서만 로컬 시간으로 바꿉니다. enum은 읽을 수 있는 문자열 값으로 저장됩니다.
+스키마 v2는 기존 v1 DB의 `tasks`에 `estimated_tokens`를 기본값 0으로 추가하며,
+일반 작업의 0은 추정치 미지정을 뜻합니다.
 
 ## 3. 작업 상태 전이
 
@@ -172,6 +177,8 @@ flowchart TD
 - 취소·타임아웃·복구는 `psutil`로 전체 하위 프로세스 트리를 종료합니다.
 - 복구 종료 직전에도 예상 생성 시각을 다시 비교해 PID 검증과 종료 사이의 재사용을 막습니다.
 - Claude의 구조화 `rate_limit_event`는 `rate_limit_info.status=allowed`이면 정상으로 처리하고, 일반 제한 문자열은 비정상 종료에서만 보조 분류합니다.
+- `plan-batch`는 전용 작업을 먼저 예산에 반영하고 큰 `any` 작업부터 예상 사용률이 낮은 에이전트에 결정적으로 배치합니다.
+- 계획된 작업은 결정된 전용 정책으로 바꾼 뒤 `TaskService.create_batch()`의 단일 트랜잭션으로 저장합니다.
 
 ## 6. 주요 파일
 
@@ -179,6 +186,7 @@ flowchart TD
 |---|---|
 | `application/runtime.py` | APScheduler 틱, asyncio 실행 루프, 승인·거절·중단 |
 | `application/task_service.py` | 작업 CRUD·복제·재시도·맨 위 이동·완료 보관·의존성 검증 |
+| `application/workload_planning.py` | 명시적 토큰 예산 검증·결정적 Claude/Codex 분배 |
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·점수·CAS 예약 |
 | `application/execution_service.py` | CLI 실행과 여섯 결과 경로 처리 |

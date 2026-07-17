@@ -13,6 +13,7 @@ Claude Code와 Codex CLI에 맡길 작업을 미리 등록하고, 에이전트 �
 - [x] Phase 4: Claude Code/Codex CLI 어댑터와 오류 분류
 - [x] Phase 5: PySide6 작업 관리 UI, 승인, 로그, 트레이, 알림
 - [x] Phase 6: 경로 정책, 백업·설정 내보내기·시작 프로그램, PyInstaller 빌드, 소크 테스트
+- [x] Phase 7: 예상 토큰 기반 Claude/Codex 작업량 분배와 원자적 배치 등록
 
 ## 빠른 시작
 
@@ -52,7 +53,7 @@ allowed_project_roots = ["C:/Users/me/projects"]
 
 ## AI/CLI 연동
 
-GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `queue-status`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`), 에이전트 상태(`set-agent`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
+GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `queue-status`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`), 에이전트 상태(`set-agent`), 토큰 배치 계획(`plan-batch`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
 
 ```powershell
 # AI 도우미가 특정 프로젝트의 작업을 등록
@@ -75,6 +76,48 @@ GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전�
 ```
 
 `--not-before "YYYY-MM-DD HH:MM"`은 실행하는 PC의 로컬 시간으로 해석해 DB에는 UTC로 저장합니다. `--json`은 각 하위 명령 뒤에도 지정할 수 있습니다.
+
+### 토큰 작업량 배치 계획
+
+`plan-batch`는 JSON에 적힌 Claude/Codex 토큰 예산과 작업별 `estimated_tokens`를
+사용해 `any` 작업을 결정적으로 분배합니다. 전용 작업을 먼저 반영한 뒤 큰 `any`
+작업부터 예상 사용률이 낮은 에이전트에 배치하며, 동률이면 Claude를 선택합니다.
+하나라도 예산·경로·의존성 검증에 실패하면 작업을 전혀 등록하지 않습니다.
+
+```json
+{
+  "budgets": {"claude": 100000, "codex": 80000},
+  "tasks": [
+    {
+      "title": "아키텍처 검토",
+      "prompt": "현재 구조의 위험을 검토하세요.",
+      "project_path": "C:/projects/sample",
+      "agent_policy": "claude",
+      "estimated_tokens": 30000,
+      "approval_mode": "auto"
+    },
+    {
+      "title": "회귀 테스트",
+      "prompt": "회귀 테스트를 추가하세요.",
+      "project_path": "C:/projects/sample",
+      "agent_policy": "any",
+      "estimated_tokens": 20000,
+      "approval_mode": "auto"
+    }
+  ]
+}
+```
+
+```powershell
+# 배치 등록 없이 분배 결과만 확인
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml plan-batch workload.json --dry-run --json
+
+# 같은 계획을 한 트랜잭션으로 등록
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml plan-batch workload.json --json
+```
+
+일반 작업은 예상 토큰을 생략하거나 `0`으로 둘 수 있지만, `plan-batch`의 모든 작업은
+양수 추정치가 필요합니다. `dependency_ids`는 이미 DB에 존재하는 작업만 참조할 수 있습니다.
 
 ## 유지보수 명령
 
