@@ -63,6 +63,8 @@ def make_task(task_id: int = 1, **overrides):
         "max_retries": 2,
         "retry_count": 0,
         "retry_delay_minutes": 10,
+        "recurrence_interval_days": None,
+        "recurrence_source_task_id": None,
         "not_before": None,
         "created_at": utcnow(),
         "finished_at": None,
@@ -158,6 +160,41 @@ def test_task_dialog_preset_not_before_is_saved_as_naive_utc(app, tmp_path):
     assert created.not_before == preset.astimezone(UTC).replace(tzinfo=None)
     dialog.close()
     engine.dispose()
+
+
+def test_task_dialog_sets_and_loads_daily_weekly_and_custom_recurrence(app, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    config = make_config_with_roots(project)
+    dialog = TaskDialog(config=config)
+    dialog.title_edit.setText("반복 점검")
+    dialog.prompt_edit.setPlainText("정기 점검을 실행한다.")
+
+    assert [
+        dialog.recurrence_combo.itemData(index)
+        for index in range(dialog.recurrence_combo.count())
+    ] == [None, 1, 7, "custom"]
+
+    dialog.recurrence_combo.setCurrentIndex(dialog.recurrence_combo.findData(1))
+    assert dialog.build_draft().recurrence_interval_days == 1
+    dialog.recurrence_combo.setCurrentIndex(dialog.recurrence_combo.findData(7))
+    assert dialog.build_draft().recurrence_interval_days == 7
+    dialog.recurrence_combo.setCurrentIndex(
+        dialog.recurrence_combo.findData("custom")
+    )
+    dialog.recurrence_days_spin.setValue(3)
+    assert dialog.recurrence_days_spin.isEnabled()
+    assert dialog.build_draft().recurrence_interval_days == 3
+
+    edit_dialog = TaskDialog(
+        make_task(project_path=str(project), recurrence_interval_days=7),
+        config=config,
+    )
+    assert edit_dialog.recurrence_combo.currentData() == 7
+    assert edit_dialog.build_draft().recurrence_interval_days == 7
+
+    dialog.close()
+    edit_dialog.close()
 
 
 def test_task_dialog_lists_live_configured_roots_on_open(app, tmp_path):

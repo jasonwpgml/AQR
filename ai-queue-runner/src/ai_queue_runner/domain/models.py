@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy import (
     Enum as SAEnum,
@@ -70,6 +71,14 @@ class Task(Base):
         CheckConstraint(
             "estimated_tokens >= 0", name="ck_tasks_estimated_tokens_nonnegative"
         ),
+        CheckConstraint(
+            "recurrence_interval_days IS NULL OR recurrence_interval_days >= 1",
+            name="ck_tasks_recurrence_interval_positive",
+        ),
+        UniqueConstraint(
+            "recurrence_source_task_id",
+            name="uq_tasks_recurrence_source_task_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -88,6 +97,10 @@ class Task(Base):
     max_retries: Mapped[int] = mapped_column(default=2)
     retry_count: Mapped[int] = mapped_column(default=0)
     retry_delay_minutes: Mapped[int] = mapped_column(default=10)
+    recurrence_interval_days: Mapped[int | None] = mapped_column(Integer, default=None)
+    recurrence_source_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), default=None
+    )
     not_before: Mapped[datetime | None] = mapped_column(default=None)
     reserved_at: Mapped[datetime | None] = mapped_column(default=None)
     started_at: Mapped[datetime | None] = mapped_column(default=None)

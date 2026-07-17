@@ -156,6 +156,25 @@ class TaskDialog(QDialog):
         self.retry_delay_spin.setValue(10)
         self.retry_delay_spin.setSuffix("분")
 
+        self.recurrence_combo = QComboBox()
+        self.recurrence_combo.setAccessibleName("반복 규칙")
+        self.recurrence_combo.addItem("반복 안 함", None)
+        self.recurrence_combo.addItem("매일", 1)
+        self.recurrence_combo.addItem("매주", 7)
+        self.recurrence_combo.addItem("N일 간격", "custom")
+        self.recurrence_days_spin = QSpinBox()
+        self.recurrence_days_spin.setAccessibleName("반복 간격 일수")
+        self.recurrence_days_spin.setRange(2, 36_500)
+        self.recurrence_days_spin.setValue(2)
+        self.recurrence_days_spin.setSuffix("일")
+        self.recurrence_days_spin.setEnabled(False)
+        self.recurrence_combo.currentIndexChanged.connect(self._recurrence_selected)
+        recurrence_row = QWidget()
+        recurrence_layout = QHBoxLayout(recurrence_row)
+        recurrence_layout.setContentsMargins(0, 0, 0, 0)
+        recurrence_layout.addWidget(self.recurrence_combo, 1)
+        recurrence_layout.addWidget(self.recurrence_days_spin)
+
         self.not_before_check = QCheckBox("실행 가능 시각 지정")
         self.not_before_edit = QDateTimeEdit(QDateTime.currentDateTime())
         self.not_before_edit.setCalendarPopup(True)
@@ -187,6 +206,7 @@ class TaskDialog(QDialog):
         form.addRow("실행 방식", self.approval_combo)
         form.addRow("최대 재시도", self.max_retries_spin)
         form.addRow("재시도 간격", self.retry_delay_spin)
+        form.addRow("반복", recurrence_row)
         form.addRow("예약", not_before_row)
         form.addRow("태그", self.tags_edit)
         form.addRow(QLabel("선행 작업"), self.dependencies_list)
@@ -343,6 +363,16 @@ class TaskDialog(QDialog):
         )
         self.max_retries_spin.setValue(int(getattr(task, "max_retries", 2)))
         self.retry_delay_spin.setValue(int(getattr(task, "retry_delay_minutes", 10)))
+        recurrence_interval_days = getattr(task, "recurrence_interval_days", None)
+        if recurrence_interval_days in {1, 7}:
+            self.recurrence_combo.setCurrentIndex(
+                self.recurrence_combo.findData(recurrence_interval_days)
+            )
+        elif recurrence_interval_days is not None:
+            self.recurrence_days_spin.setValue(int(recurrence_interval_days))
+            self.recurrence_combo.setCurrentIndex(
+                self.recurrence_combo.findData("custom")
+            )
         not_before = getattr(task, "not_before", None)
         if not_before is not None:
             self.not_before_check.setChecked(True)
@@ -365,6 +395,11 @@ class TaskDialog(QDialog):
             if enum_value(combo.itemData(index)) == value:
                 combo.setCurrentIndex(index)
                 return
+
+    def _recurrence_selected(self, _index: int) -> None:
+        self.recurrence_days_spin.setEnabled(
+            self.recurrence_combo.currentData() == "custom"
+        )
 
     def _configured_roots(self) -> list[Path]:
         return [Path(root) for root in self._config.app.allowed_project_roots]
@@ -521,6 +556,12 @@ class TaskDialog(QDialog):
             if self.not_before_check.isChecked()
             else None
         )
+        recurrence_value = self.recurrence_combo.currentData()
+        recurrence_interval_days = (
+            self.recurrence_days_spin.value()
+            if recurrence_value == "custom"
+            else recurrence_value
+        )
         return TaskDraft(
             title=title,
             prompt=prompt,
@@ -531,6 +572,7 @@ class TaskDialog(QDialog):
             approval_mode=self.approval_combo.currentData(),
             max_retries=self.max_retries_spin.value(),
             retry_delay_minutes=self.retry_delay_spin.value(),
+            recurrence_interval_days=recurrence_interval_days,
             not_before=not_before,
             tags=[tag.strip() for tag in self.tags_edit.text().split(",") if tag.strip()],
             dependency_ids=self.selected_dependency_ids(),

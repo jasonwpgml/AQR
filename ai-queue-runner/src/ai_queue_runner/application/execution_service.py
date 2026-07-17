@@ -9,6 +9,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from ai_queue_runner.application.recurrence_service import enqueue_next_occurrence
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import (
@@ -139,6 +140,7 @@ class ExecutionService:
 
         _populate_result_summary(run, adapter, stdout_path)
         self._record_result(
+            session,
             task_repo,
             run_repo,
             task,
@@ -186,6 +188,7 @@ class ExecutionService:
 
     def _record_result(
         self,
+        session: Session,
         task_repo: TaskRepository,
         run_repo: TaskRunRepository,
         task: Task,
@@ -212,10 +215,17 @@ class ExecutionService:
             and classified_error not in {ErrorType.AUTH, ErrorType.USAGE_LIMIT, ErrorType.CRASH}
             and not matched_unstructured_limit
         ):
-            task_repo.set_status(task, TaskStatus.SUCCEEDED)
             task.finished_at = result.finished_at
+            task_repo.set_status(task, TaskStatus.SUCCEEDED)
             task.last_error = None
             task.fallback_agent = None
+            # AIDEV-NOTE: success and its successor share this transaction; the
+            # unique source-task key makes replay safe after a crash or restart.
+            enqueue_next_occurrence(
+                session,
+                task,
+                completed_at=result.finished_at,
+            )
             agent_state.status = AgentStatus.AVAILABLE
             agent_state.current_task_id = None
             agent_state.available_at = None

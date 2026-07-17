@@ -59,6 +59,7 @@ def _dispatch(
                 estimated_tokens=args.estimated_tokens,
                 approval_mode=args.approval,
                 max_retries=args.max_retries,
+                recurrence_interval_days=_parse_recurrence_interval(args.repeat),
                 not_before=_parse_local_datetime(args.not_before),
                 tags=args.tag,
                 dependency_ids=args.depends_on,
@@ -159,12 +160,20 @@ def _merged_draft(args: argparse.Namespace, service: TaskService) -> TaskDraft:
         raise CliUsageError(f"작업 #{args.task_id}을 찾을 수 없습니다.")
     if args.clear_not_before and args.not_before is not None:
         raise CliUsageError("--not-before와 --clear-not-before는 함께 쓸 수 없습니다.")
+    if args.clear_repeat and args.repeat is not None:
+        raise CliUsageError("--repeat와 --clear-repeat는 함께 쓸 수 없습니다.")
     if args.clear_not_before:
         not_before = None
     elif args.not_before is not None:
         not_before = _parse_local_datetime(args.not_before)
     else:
         not_before = current.not_before
+    if args.clear_repeat:
+        recurrence_interval_days = None
+    elif args.repeat is not None:
+        recurrence_interval_days = _parse_recurrence_interval(args.repeat)
+    else:
+        recurrence_interval_days = current.recurrence_interval_days
     return TaskDraft(
         title=current.title if args.title is None else args.title,
         prompt=current.prompt if args.prompt is None else args.prompt,
@@ -181,6 +190,7 @@ def _merged_draft(args: argparse.Namespace, service: TaskService) -> TaskDraft:
         retry_delay_minutes=(
             current.retry_delay_minutes if args.retry_delay is None else args.retry_delay
         ),
+        recurrence_interval_days=recurrence_interval_days,
         not_before=not_before,
         tags=list(current.tags) if args.tag is None else args.tag,
         dependency_ids=(
@@ -323,6 +333,35 @@ def _parse_local_datetime(value: str | None) -> datetime | None:
     return local.astimezone(UTC).replace(tzinfo=None)
 
 
+def _parse_recurrence_interval(value: str | None) -> int | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized == "daily":
+        return 1
+    if normalized == "weekly":
+        return 7
+    if normalized.endswith("d"):
+        normalized = normalized[:-1]
+    try:
+        interval = int(normalized)
+    except ValueError as exc:
+        raise CliUsageError("--repeat는 daily, weekly 또는 양의 일수 N이어야 합니다.") from exc
+    if interval < 1:
+        raise CliUsageError("--repeat 일수는 1 이상이어야 합니다.")
+    return interval
+
+
+def _recurrence_text(interval_days: int | None) -> str | None:
+    if interval_days is None:
+        return None
+    if interval_days == 1:
+        return "daily"
+    if interval_days == 7:
+        return "weekly"
+    return f"every {interval_days} days"
+
+
 def _task_record(task: object) -> dict[str, Any]:
     return {
         "id": int(task.id),
@@ -339,6 +378,9 @@ def _task_record(task: object) -> dict[str, Any]:
         "max_retries": int(task.max_retries),
         "retry_count": int(task.retry_count),
         "retry_delay_minutes": int(task.retry_delay_minutes),
+        "recurrence": _recurrence_text(task.recurrence_interval_days),
+        "recurrence_interval_days": task.recurrence_interval_days,
+        "recurrence_source_task_id": task.recurrence_source_task_id,
         "not_before": _utc_iso(task.not_before),
         "reserved_at": _utc_iso(task.reserved_at),
         "started_at": _utc_iso(task.started_at),
@@ -374,11 +416,12 @@ def _run_record(run: object) -> dict[str, Any]:
 def _task_table(records: list[dict[str, Any]]) -> str:
     if not records:
         return "작업이 없습니다."
-    rows = ["ID  STATUS       AGENT   PRIORITY  TITLE"]
+    rows = ["ID  STATUS       AGENT   PRIORITY  REPEAT        TITLE"]
     rows.extend(
         f"{record['id']:<3} {record['status']:<12} "
         f"{(record['assigned_agent'] or record['agent_policy']):<7} "
-        f"{record['priority']:<8}  {record['title']}"
+        f"{record['priority']:<8}  {(record['recurrence'] or '-'):<12}  "
+        f"{record['title']}"
         for record in records
     )
     return "\n".join(rows)

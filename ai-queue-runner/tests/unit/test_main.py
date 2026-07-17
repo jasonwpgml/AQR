@@ -357,6 +357,79 @@ def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
     assert "함께 쓸 수 없습니다" in capsys.readouterr().err
 
 
+def test_cli_sets_updates_lists_and_shows_recurring_rules(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    project = allowed_root / "project"
+    project.mkdir()
+    add_args = cli_args(
+        config_path,
+        "add-task",
+        "--title",
+        "반복 점검",
+        "--prompt",
+        "정기 점검을 실행합니다.",
+        "--project",
+        project,
+        "--repeat",
+        "daily",
+        as_json=True,
+    )
+
+    assert main(add_args) == 0
+    created = json.loads(capsys.readouterr().out)
+    assert created["recurrence"] == "daily"
+    assert created["recurrence_interval_days"] == 1
+
+    assert main(cli_args(config_path, "list-tasks")) == 0
+    assert "daily" in capsys.readouterr().out
+
+    assert main(
+        cli_args(
+            config_path,
+            "update-task",
+            created["id"],
+            "--repeat",
+            "weekly",
+            as_json=True,
+        )
+    ) == 0
+    weekly = json.loads(capsys.readouterr().out)
+    assert weekly["recurrence"] == "weekly"
+    assert weekly["recurrence_interval_days"] == 7
+
+    assert main(
+        cli_args(
+            config_path,
+            "update-task",
+            created["id"],
+            "--repeat",
+            3,
+            as_json=True,
+        )
+    ) == 0
+    every_three_days = json.loads(capsys.readouterr().out)
+    assert every_three_days["recurrence"] == "every 3 days"
+    assert every_three_days["recurrence_interval_days"] == 3
+
+    assert main(cli_args(config_path, "show-task", created["id"])) == 0
+    shown = capsys.readouterr().out
+    assert "recurrence: every 3 days" in shown
+    assert "recurrence_interval_days: 3" in shown
+
+    assert main(
+        cli_args(
+            config_path,
+            "update-task",
+            created["id"],
+            "--clear-repeat",
+            as_json=True,
+        )
+    ) == 0
+    stopped = json.loads(capsys.readouterr().out)
+    assert stopped["recurrence"] is None
+    assert stopped["recurrence_interval_days"] is None
+
+
 def test_cli_plan_batch_distributes_and_atomically_enqueues_tasks(tmp_path, capsys):
     config_path, allowed_root = write_cli_config(tmp_path)
     project = allowed_root / "project"

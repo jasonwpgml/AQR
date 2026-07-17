@@ -33,12 +33,12 @@
 
 | 명령 | 용도 | 주요 옵션/인자 |
 |---|---|---|
-| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--tag`, `--depends-on` |
+| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
 | `list-tasks` | 목록 조회 | `--status {waiting,reserved,running,succeeded,failed,retry_wait,blocked,cancelled,archived}` |
-| `show-task ID` | 상세 + 최근 5회 실행 | `fallback_agent`, `recent_runs[].fallback_to_agent`로 전환 확인 |
+| `show-task ID` | 상세 + 최근 5회 실행 | `recurrence`, `recurrence_interval_days`, `recurrence_source_task_id`로 반복 체인 확인 |
 | `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run` |
 | `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
-| `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`로 전환, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
+| `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`, `--repeat`, `--clear-repeat`, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
 | `retry-task ID` | 실패(failed)/차단(blocked) 작업 재대기 | 재시도 횟수·오류 초기화 |
 | `cancel-task ID` | 대기·재시도대기·차단 작업 취소 | |
 | `duplicate-task ID` | 작업 복제(새 waiting 작업) | |
@@ -80,6 +80,24 @@
 ... plan-batch workload.json --dry-run --json
 ... plan-batch workload.json --json
 ```
+
+## 반복 작업
+
+`--repeat daily`, `--repeat weekly`, 또는 `--repeat N`(N일 간격)으로 등록한다. 작업이
+`succeeded`가 된 시각을 기준으로 N일 뒤의 `not_before`를 가진 다음 회차가 한 번만
+자동 생성된다. 실패·차단·취소된 작업은 다음 회차를 만들지 않는다.
+
+```powershell
+... add-task --title "매일 저장소 점검" --prompt "..." --project "C:\projects\sample" `
+    --agent codex --approval auto --repeat daily --json
+... update-task 7 --repeat 3 --json       # 3일 간격으로 변경
+... update-task 7 --clear-repeat --json  # 현재 회차 성공 후 체인 중단
+... show-task 7 --json
+```
+
+`list-tasks`의 `REPEAT` 열과 `show-task`의 `recurrence`에서 규칙을 확인한다. 자동 생성된
+회차의 `recurrence_source_task_id`는 직전 회차 ID다. 아직 실행 전인 현재 회차를
+`cancel-task`로 취소해도 체인이 중단된다.
 
 ## 상태 머신 (어떤 명령이 통하는지)
 

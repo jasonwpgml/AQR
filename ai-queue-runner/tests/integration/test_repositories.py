@@ -175,6 +175,39 @@ class TestPersistence:
             assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
         engine.dispose()
 
+    def test_schema_v3_is_migrated_with_recurring_task_columns(self, tmp_path):
+        db_path = tmp_path / "v3.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE tasks (id INTEGER PRIMARY KEY, fallback_agent VARCHAR(6))"
+            )
+            connection.exec_driver_sql("INSERT INTO tasks (id) VALUES (1)")
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '3')"
+            )
+
+        init_db(engine)
+
+        task_columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+        task_indexes = {
+            index["name"]: index for index in inspect(engine).get_indexes("tasks")
+        }
+        assert "recurrence_interval_days" in task_columns
+        assert "recurrence_source_task_id" in task_columns
+        assert task_indexes["uq_tasks_recurrence_source_task_id"]["unique"]
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT recurrence_interval_days, recurrence_source_task_id "
+                "FROM tasks WHERE id = 1"
+            ).one() == (None, None)
+        with make_session_factory(engine)() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
+
 
 class TestDependencies:
     def test_dependency_roundtrip(self, session):

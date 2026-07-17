@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -52,7 +52,38 @@ def _migrate_v2_to_v3(session: Session) -> None:
         )
 
 
-_MIGRATIONS = {1: _migrate_v1_to_v2, 2: _migrate_v2_to_v3}
+def _migrate_v3_to_v4(session: Session) -> None:
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "recurrence_interval_days" not in task_columns:
+        session.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN recurrence_interval_days INTEGER "
+                "CHECK (recurrence_interval_days IS NULL OR recurrence_interval_days >= 1)"
+            )
+        )
+    if "recurrence_source_task_id" not in task_columns:
+        session.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN recurrence_source_task_id INTEGER "
+                "REFERENCES tasks(id) ON DELETE SET NULL"
+            )
+        )
+    session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_tasks_recurrence_source_task_id "
+            "ON tasks(recurrence_source_task_id)"
+        )
+    )
+
+
+_MIGRATIONS = {
+    1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
+    3: _migrate_v3_to_v4,
+}
 
 
 def create_db_engine(db_path: Path | str) -> Engine:

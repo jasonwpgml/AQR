@@ -28,6 +28,11 @@ class TaskRepository:
     def get(self, task_id: int) -> Task | None:
         return self._session.get(Task, task_id)
 
+    def get_next_occurrence(self, source_task_id: int) -> Task | None:
+        return self._session.scalar(
+            select(Task).where(Task.recurrence_source_task_id == source_task_id)
+        )
+
     def list(self, *, status: TaskStatus | None = None) -> list[Task]:
         stmt = select(Task).order_by(Task.id)
         if status is not None:
