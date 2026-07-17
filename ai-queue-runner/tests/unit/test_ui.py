@@ -24,6 +24,7 @@ from ai_queue_runner.domain.enums import (
     AgentPolicy,
     AgentStatus,
     ApprovalMode,
+    ErrorType,
     TaskStatus,
 )
 from ai_queue_runner.infrastructure.database import (
@@ -54,6 +55,7 @@ def make_task(task_id: int = 1, **overrides):
         "project_path": "C:/work/sample",
         "agent_policy": AgentPolicy.CODEX,
         "assigned_agent": None,
+        "fallback_agent": None,
         "priority": 70,
         "estimated_tokens": 0,
         "status": TaskStatus.WAITING,
@@ -593,6 +595,43 @@ def test_main_window_constructs_and_refreshes_from_services(app):
     window.start_scheduler()
     assert window.pause_button.isEnabled()
 
+    window.close()
+
+
+def test_main_window_details_show_fallback_history(app):
+    task = make_task(
+        agent_policy=AgentPolicy.ANY,
+        fallback_agent=AgentName.CODEX,
+    )
+    service = FakeTaskService([task])
+    service.list_runs = lambda _task_id: [
+        SimpleNamespace(
+            attempt=1,
+            agent=AgentName.CLAUDE,
+            exit_code=1,
+            error_type=ErrorType.UNKNOWN,
+            fallback_to_agent=AgentName.CODEX,
+            stdout_path=None,
+            stderr_path=None,
+        )
+    ]
+    window = MainWindow(
+        service,
+        FakeAgentService(),
+        FakeRuntime(),
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+
+    window.task_table.selectRow(0)
+    app.processEvents()
+
+    details = window.details_view.toPlainText()
+    assert "Fallback 우선 AI: codex" in details
+    assert "claude → codex (unknown)" in details
     window.close()
 
 

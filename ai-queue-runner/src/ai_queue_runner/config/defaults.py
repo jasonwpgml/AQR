@@ -38,6 +38,8 @@ class AppSection(StrictModel):
 
 class SchedulerSection(StrictModel):
     poll_interval_seconds: int = Field(default=30, ge=1)
+    fallback_enabled: bool = True
+    fallback_failure_threshold: int = Field(default=1, ge=1)
     dedicated_agent_bonus: int = Field(default=20, ge=0)
     waiting_time_bonus_per_hour: float = Field(default=1, ge=0)
     waiting_time_bonus_max_hours: int = Field(default=24, ge=0)

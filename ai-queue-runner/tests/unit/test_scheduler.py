@@ -148,6 +148,41 @@ def test_disabled_agent_config_selects_nothing():
     assert selected is None
 
 
+def test_fallback_preference_excludes_previous_agent_when_target_is_available():
+    task = make_task(1, fallback_agent=AgentName.CODEX)
+    service = SchedulerService(AppConfig())
+    available_agents = {AgentName.CLAUDE, AgentName.CODEX}
+
+    assert service.select_task(
+        [task],
+        AgentName.CLAUDE,
+        available_state(AgentName.CLAUDE),
+        NOW,
+        available_agents=available_agents,
+    ) is None
+    assert service.select_task(
+        [task],
+        AgentName.CODEX,
+        available_state(AgentName.CODEX),
+        NOW,
+        available_agents=available_agents,
+    ) is task
+
+
+def test_fallback_preference_does_not_pin_task_to_unavailable_target():
+    task = make_task(1, fallback_agent=AgentName.CODEX)
+
+    selected = SchedulerService(AppConfig()).select_task(
+        [task],
+        AgentName.CLAUDE,
+        available_state(AgentName.CLAUDE),
+        NOW,
+        available_agents={AgentName.CLAUDE},
+    )
+
+    assert selected is task
+
+
 def test_high_priority_dedicated_task_preempts_any_task():
     dedicated = make_task(
         1,

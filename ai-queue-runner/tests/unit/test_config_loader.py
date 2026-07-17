@@ -13,6 +13,8 @@ def test_defaults_when_no_config_file(tmp_path, monkeypatch):
     assert config.app.db_path == tmp_path / "local" / "AIQueueRunner" / "data/queue.db"
     assert config.app.logs_dir == tmp_path / "local" / "AIQueueRunner" / "logs"
     assert set(config.agents) == {"claude", "codex"}
+    assert config.scheduler.fallback_enabled is True
+    assert config.scheduler.fallback_failure_threshold == 1
 
 
 def test_default_app_data_dir_has_home_fallback(tmp_path, monkeypatch):
@@ -38,6 +40,8 @@ log_level = "DEBUG"
 
 [scheduler]
 dedicated_agent_bonus = 30
+fallback_enabled = false
+fallback_failure_threshold = 2
 
 [agents.claude]
 limit_patterns = ["custom limit message"]
@@ -49,6 +53,8 @@ limit_patterns = ["custom limit message"]
     assert config.app.allowed_project_roots == [Path("C:/projects")]
     assert config.app.log_level == "DEBUG"
     assert config.scheduler.dedicated_agent_bonus == 30
+    assert config.scheduler.fallback_enabled is False
+    assert config.scheduler.fallback_failure_threshold == 2
     assert config.agents["claude"].limit_patterns == ["custom limit message"]
     assert config.agents["claude"].executable == "claude"
     assert config.agents["codex"].executable == "codex"

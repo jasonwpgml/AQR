@@ -331,6 +331,7 @@ def _task_record(task: object) -> dict[str, Any]:
         "project_path": task.project_path,
         "agent_policy": _enum_value(task.agent_policy),
         "assigned_agent": _enum_value(task.assigned_agent),
+        "fallback_agent": _enum_value(task.fallback_agent),
         "priority": int(task.priority),
         "estimated_tokens": int(task.estimated_tokens),
         "status": _enum_value(task.status),
@@ -366,6 +367,7 @@ def _run_record(run: object) -> dict[str, Any]:
         "finished_at": _utc_iso(run.finished_at),
         "result_summary": run.result_summary,
         "error_type": _enum_value(run.error_type),
+        "fallback_to_agent": _enum_value(run.fallback_to_agent),
     }
 
 
@@ -396,7 +398,12 @@ def _task_details(record: dict[str, Any]) -> str:
         lines.extend(
             "  - "
             f"attempt={run['attempt']} agent={run['agent']} exit_code={run['exit_code']} "
-            f"result_summary={_text_value(run['result_summary'])}"
+            + (
+                f"fallback={run['agent']}->{run['fallback_to_agent']} "
+                if run["fallback_to_agent"]
+                else ""
+            )
+            + f"result_summary={_text_value(run['result_summary'])}"
             for run in runs
         )
     return "\n".join(lines)

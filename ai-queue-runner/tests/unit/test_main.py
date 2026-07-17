@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from ai_queue_runner.application.task_service import TaskService
 from ai_queue_runner.config.loader import load_config
-from ai_queue_runner.domain.enums import AgentName, TaskStatus
+from ai_queue_runner.domain.enums import AgentName, ErrorType, TaskStatus
 from ai_queue_runner.domain.models import TaskRun
 from ai_queue_runner.infrastructure.database import create_db_engine, make_session_factory
 from ai_queue_runner.infrastructure.repositories import TaskRepository, TaskRunRepository
@@ -206,8 +206,10 @@ def test_cli_list_filter_show_and_json_include_stable_fields(tmp_path, capsys):
                 agent=AgentName.CODEX,
                 attempt=1,
                 command=["codex", "exec"],
-                exit_code=0,
+                exit_code=1,
                 result_summary="테스트 통과",
+                error_type=ErrorType.UNKNOWN,
+                fallback_to_agent=AgentName.CLAUDE,
             )
         )
         session.commit()
@@ -228,10 +230,12 @@ def test_cli_list_filter_show_and_json_include_stable_fields(tmp_path, capsys):
     assert shown["last_error"] is None
     assert shown["created_at"].endswith("Z")
     assert shown["recent_runs"][0]["result_summary"] == "테스트 통과"
+    assert shown["recent_runs"][0]["fallback_to_agent"] == "claude"
 
     assert main(cli_args(config_path, "show-task", first["id"])) == 0
     text = capsys.readouterr().out
     assert "last_error: -" in text
+    assert "fallback=codex->claude" in text
     assert "result_summary=테스트 통과" in text
 
 

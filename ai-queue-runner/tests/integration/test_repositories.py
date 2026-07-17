@@ -145,6 +145,36 @@ class TestPersistence:
             assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
         engine.dispose()
 
+    def test_schema_v2_is_migrated_with_fallback_columns(self, tmp_path):
+        db_path = tmp_path / "v2.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE tasks (id INTEGER PRIMARY KEY, estimated_tokens INTEGER "
+                "NOT NULL DEFAULT 0)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '2')"
+            )
+
+        init_db(engine)
+
+        task_columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+        run_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_runs")
+        }
+        assert "fallback_agent" in task_columns
+        assert "fallback_to_agent" in run_columns
+        with make_session_factory(engine)() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
+
 
 class TestDependencies:
     def test_dependency_roundtrip(self, session):
