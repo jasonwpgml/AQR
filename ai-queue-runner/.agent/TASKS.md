@@ -34,3 +34,4 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T029 automatic fallback of failed Any-policy tasks to the other agent
 [done] T030 recurring tasks enqueue one scheduled successor after successful completion
 [done] T031 opt-in Git worktree isolation for same-project parallel tasks
+[done] T032 daily project activity summary for CLI and calendar UI

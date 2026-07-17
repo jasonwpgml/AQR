@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCalendarWidget,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -61,10 +62,13 @@ class CalendarView(QWidget):
 
         self.add_button = QPushButton("이 날짜에 작업 추가")
         self.add_button.clicked.connect(self._request_add_task)
+        self.summary_button = QPushButton("이 날짜 요약")
+        self.summary_button.clicked.connect(self._show_daily_summary)
 
         details_header = QHBoxLayout()
         details_header.addWidget(self.day_label)
         details_header.addStretch(1)
+        details_header.addWidget(self.summary_button)
         details_header.addWidget(self.add_button)
 
         layout = QVBoxLayout(self)
@@ -160,6 +164,20 @@ class CalendarView(QWidget):
         ).astimezone()
         self.add_task_requested.emit(local_nine_am)
 
+    def _show_daily_summary(self) -> None:
+        selected = self.calendar.selectedDate()
+        selected_date = date(selected.year(), selected.month(), selected.day())
+        try:
+            summary = self._task_service.daily_summary(selected_date)
+        except Exception as exc:
+            QMessageBox.critical(self, "일일 요약 실패", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            f"{selected_date.isoformat()} 일일 요약",
+            _daily_summary_text(summary),
+        )
+
 
 def _visible_month_utc_range(year: int, month: int) -> tuple[datetime, datetime]:
     start_local = datetime(year, month, 1).astimezone()
@@ -183,3 +201,45 @@ def _is_local_date(value: datetime | None, expected: date) -> bool:
 
 def _to_qdate(value: date) -> QDate:
     return QDate(value.year, value.month, value.day)
+
+
+def _daily_summary_text(summary: object) -> str:
+    totals = summary.totals
+    lines = [
+        _summary_counts_text("전체", totals),
+        "사용량 제한 대기: "
+        f"Claude {'발생' if totals.claude_usage_limit_wait_occurred else '없음'}, "
+        f"Codex {'발생' if totals.codex_usage_limit_wait_occurred else '없음'}",
+    ]
+    if not summary.projects:
+        lines.append("프로젝트 활동이 없습니다.")
+        return "\n".join(lines)
+    for project in summary.projects:
+        lines.extend(("", project.project_path, _summary_counts_text("결과", project)))
+        branches = ", ".join(project.worktree_branches) or "-"
+        lines.append(f"worktree: {branches}")
+        lines.extend(
+            f"실패 #{task.id} {task.title} "
+            f"({_enum_text(task.last_error_type) or '오류 유형 없음'})"
+            for task in project.failed_tasks
+        )
+    return "\n".join(lines)
+
+
+def _summary_counts_text(label: str, value: object) -> str:
+    seconds = max(0, round(value.total_runtime_seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return (
+        f"{label}: 완료 {value.succeeded_count} · 실패 {value.failed_count} · "
+        f"차단 {value.blocked_count} · 취소 {value.cancelled_count}\n"
+        f"실행 {hours:02d}:{minutes:02d}:{seconds:02d} · "
+        f"Claude {value.claude_run_count}회 · Codex {value.codex_run_count}회 · "
+        f"fallback {value.fallback_count}회"
+    )
+
+
+def _enum_text(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))

@@ -1,6 +1,6 @@
 FROM: codex
 TO: claude
-TASK: T031
+TASK: T032
 STATUS: completed
 
 CHANGED:
@@ -10,47 +10,33 @@ CHANGED:
 - .agent/TASKS.md
 - .agent/HANDOFF.md
 - README.md
-- config.example.toml
 - docs/AI_GUIDE.md
 - docs/ARCHITECTURE.md
 - src/ai_queue_runner/application/cli_service.py
-- src/ai_queue_runner/application/execution_service.py
-- src/ai_queue_runner/application/runtime.py
-- src/ai_queue_runner/application/scheduler_service.py
 - src/ai_queue_runner/application/task_service.py
-- src/ai_queue_runner/application/worktree_service.py
-- src/ai_queue_runner/config/defaults.py
-- src/ai_queue_runner/config/loader.py
-- src/ai_queue_runner/domain/models.py
-- src/ai_queue_runner/infrastructure/database.py
-- src/ai_queue_runner/infrastructure/git_worktrees.py
+- src/ai_queue_runner/infrastructure/repositories.py
 - src/ai_queue_runner/main.py
-- src/ai_queue_runner/ui/approval_dialog.py
-- src/ai_queue_runner/ui/log_viewer.py
-- src/ai_queue_runner/ui/main_window.py
-- tests/integration/test_git_worktrees.py
-- tests/integration/test_repositories.py
-- tests/integration/test_stabilization.py
-- tests/unit/test_config_loader.py
+- src/ai_queue_runner/ui/calendar_view.py
+- tests/integration/test_application_services.py
+- tests/unit/test_main.py
 - tests/unit/test_ui.py
 
 VERIFIED:
-- `..\.venv\Scripts\python -m pytest -q` -> 283 passed in 26.16s
+- `..\.venv\Scripts\python -m pytest -q tests\integration\test_application_services.py tests\unit\test_main.py tests\unit\test_ui.py` -> 80 passed in 6.13s
+- `..\.venv\Scripts\python -m pytest -q` -> 288 passed in 24.06s
 - `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
 - `git diff --check` -> no whitespace errors (Git emitted only existing LF/CRLF conversion warnings)
+- `..\.venv\Scripts\python -m ai_queue_runner --help` -> `daily-summary` listed
 
 NOTES:
-- Schema v5 adds `tasks.use_worktree/worktree_path/worktree_branch` and matching path/branch fields on `task_runs`; v4 databases migrate idempotently.
-- `[scheduler] worktree_parallel_enabled=false` is the opt-in switch. `app.worktrees_dir` and the Git timeout are configurable; relative worktree paths resolve beside the config file.
-- The ordinary CAS still requires no reserved/running same-project row. Only an enabled lock-conflicting candidate uses an alternate CAS that requires the lock to exist and marks that reservation for isolation.
-- Immediately after reservation, `WorktreeService` creates or reuses `worktrees_dir/T<ID>` on `aqr/T<ID>`. Non-Git projects, conflicting branch/path ownership, and Git failures release task+agent back to waiting, preserving exclusive serial fallback.
-- Successful preparation changes only the adapter execution cwd/prompt path. The task's original project path remains stable, while task details, approval preview, log labels, `show-task`, and task-run rows expose the actual path and branch.
-- Worktrees survive success, failure, cancellation, stale reservation recovery, and running-task recovery. A persisted isolated task revalidates/reuses the same registered checkout after restart; orphan worktree directories are not scheduler locks.
-- `cleanup-worktree ID` accepts terminal tasks, refuses dirty files and branch commits not ancestral to the original project's current HEAD, removes only the registered managed worktree, and leaves the branch plus DB run history. Tasks with live worktrees cannot be deleted or moved to another project before cleanup.
-- Removed only the implemented Git-worktree bullet from plan section 20. No automatic merge, conflict resolution, commit, branch deletion, or PR behavior was added.
+- `TaskRepository.list_terminal_activity_between()` and `TaskRunRepository.list_finished_between()` own the range queries; `TaskService.daily_summary()` aggregates their rows into immutable project and total DTOs.
+- A selected local date becomes a half-open `[local midnight, next local midnight)` interval, then both boundaries are converted to naive UTC. Completed runs and terminal tasks are attributed by their finish time; blocked tasks use `updated_at` because user-rejected reservations have no `finished_at`.
+- Project summaries include succeeded/failed/blocked/cancelled counts, completed-run duration, per-agent run counts, fallback count, unique recorded worktree branches, and failed-task ID/title/latest error type. Totals add usage-limit occurrence flags per agent.
+- `daily-summary [--date YYYY-MM-DD] [--json]` supports an empty successful result and defaults to the current local date. `docs/AI_GUIDE.md` documents the complete JSON contract.
+- The calendar tab adds one `이 날짜 요약` button backed by the same application service. No tab or persistent UI state was added.
+- DB schema remains v5; no columns or migrations were added. The implemented plan §20 bullet was removed.
 
 RISKS:
-- Cleanup deliberately rejects squash/rebase-only integrations because the task branch is not an ancestor of project HEAD; users must verify and clean those cases manually.
-- Completed branches are intentionally retained and can accumulate until the user manages them.
-- The feature has a global opt-in only; there is no user-editable per-task override.
-- Pre-existing untracked `.agent/TASK_T031.md` was read as the task source and not modified.
+- The existing schema records runs but not a full task-status event log. If a failed/blocked task is later retried or cancelled, its earlier status cannot be reconstructed; summaries intentionally report the task's current terminal outcome for the selected date.
+- A run crossing local midnight contributes its full duration to the date on which it finishes, matching result-oriented morning reporting rather than wall-clock utilization per day.
+- Worktree branch lists can only include branch values persisted on the task or completed task-run rows; branch creation attempts that never persisted either value are not recoverable.

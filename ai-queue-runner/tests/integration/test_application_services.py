@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -165,6 +165,215 @@ def test_activity_between_returns_tasks_with_events_inside_range(application) ->
         tasks.activity_between(start.astimezone(), end)
     with pytest.raises(ValueError, match="before end"):
         tasks.activity_between(end, start)
+
+
+def test_daily_summary_aggregates_mixed_projects_statuses_and_run_history(
+    application,
+) -> None:
+    tasks, _agents, factory, project_a = application
+    project_b = project_a.parent / "project-b"
+    project_b.mkdir()
+    selected = date(2030, 1, 10)
+    start, _end = _local_day_utc_range(selected)
+    succeeded = tasks.create(draft(project_a, title="success"))
+    failed = tasks.create(draft(project_a, title="failed"))
+    blocked = tasks.create(draft(project_b, title="blocked"))
+    cancelled = tasks.create(draft(project_b, title="cancelled"))
+    usage_limited = tasks.create(draft(project_b, title="usage limited"))
+
+    with factory() as session:
+        repo = TaskRepository(session)
+        succeeded_row = repo.get(succeeded.id)
+        repo.set_status(succeeded_row, TaskStatus.RESERVED)
+        repo.set_status(succeeded_row, TaskStatus.RUNNING)
+        repo.set_status(succeeded_row, TaskStatus.SUCCEEDED)
+        succeeded_row.finished_at = start + timedelta(hours=2)
+
+        failed_row = repo.get(failed.id)
+        repo.set_status(failed_row, TaskStatus.RESERVED)
+        repo.set_status(failed_row, TaskStatus.RUNNING)
+        repo.set_status(failed_row, TaskStatus.FAILED)
+        failed_row.finished_at = start + timedelta(hours=4)
+        failed_row.worktree_branch = f"aqr/T{failed.id}"
+
+        blocked_row = repo.get(blocked.id)
+        repo.set_status(blocked_row, TaskStatus.RESERVED)
+        repo.set_status(blocked_row, TaskStatus.BLOCKED)
+        blocked_row.updated_at = start + timedelta(hours=5)
+
+        cancelled_row = repo.get(cancelled.id)
+        repo.set_status(cancelled_row, TaskStatus.CANCELLED)
+        cancelled_row.finished_at = start + timedelta(hours=6)
+
+        runs = TaskRunRepository(session)
+        runs.add(
+            TaskRun(
+                task_id=failed.id,
+                agent=AgentName.CODEX,
+                attempt=3,
+                command=["codex"],
+                started_at=start - timedelta(days=1, hours=1),
+                finished_at=start - timedelta(days=1),
+                exit_code=1,
+                error_type=ErrorType.UNKNOWN,
+            )
+        )
+        runs.add(
+            TaskRun(
+                task_id=succeeded.id,
+                agent=AgentName.CLAUDE,
+                attempt=1,
+                command=["claude"],
+                started_at=start + timedelta(hours=1),
+                finished_at=start + timedelta(hours=2),
+                exit_code=0,
+            )
+        )
+        runs.add(
+            TaskRun(
+                task_id=failed.id,
+                agent=AgentName.CODEX,
+                attempt=1,
+                command=["codex"],
+                started_at=start + timedelta(hours=3, minutes=30),
+                finished_at=start + timedelta(hours=4),
+                exit_code=1,
+                error_type=ErrorType.TIMEOUT,
+                fallback_to_agent=AgentName.CLAUDE,
+                worktree_branch=f"aqr/T{failed.id}",
+            )
+        )
+        runs.add(
+            TaskRun(
+                task_id=usage_limited.id,
+                agent=AgentName.CLAUDE,
+                attempt=1,
+                command=["claude"],
+                started_at=start + timedelta(hours=7),
+                finished_at=start + timedelta(hours=7, minutes=15),
+                exit_code=1,
+                error_type=ErrorType.USAGE_LIMIT,
+                fallback_to_agent=AgentName.CODEX,
+                worktree_branch=f"aqr/T{usage_limited.id}",
+            )
+        )
+        session.commit()
+
+    summary = tasks.daily_summary(selected)
+    by_path = {item.project_path: item for item in summary.projects}
+    project_a_summary = by_path[str(project_a.resolve())]
+    project_b_summary = by_path[str(project_b.resolve())]
+
+    assert (
+        project_a_summary.succeeded_count,
+        project_a_summary.failed_count,
+        project_a_summary.blocked_count,
+        project_a_summary.cancelled_count,
+    ) == (1, 1, 0, 0)
+    assert project_a_summary.total_runtime_seconds == 5_400
+    assert (project_a_summary.claude_run_count, project_a_summary.codex_run_count) == (
+        1,
+        1,
+    )
+    assert project_a_summary.fallback_count == 1
+    assert project_a_summary.worktree_branches == (f"aqr/T{failed.id}",)
+    assert project_a_summary.failed_tasks[0].id == failed.id
+    assert project_a_summary.failed_tasks[0].last_error_type is ErrorType.TIMEOUT
+
+    assert (
+        project_b_summary.succeeded_count,
+        project_b_summary.failed_count,
+        project_b_summary.blocked_count,
+        project_b_summary.cancelled_count,
+    ) == (0, 0, 1, 1)
+    assert project_b_summary.total_runtime_seconds == 900
+    assert (project_b_summary.claude_run_count, project_b_summary.codex_run_count) == (
+        1,
+        0,
+    )
+    assert project_b_summary.fallback_count == 1
+    assert project_b_summary.worktree_branches == (f"aqr/T{usage_limited.id}",)
+
+    assert summary.totals.project_count == 2
+    assert summary.totals.total_runtime_seconds == 6_300
+    assert (summary.totals.claude_run_count, summary.totals.codex_run_count) == (2, 1)
+    assert summary.totals.fallback_count == 2
+    assert summary.totals.failed_task_count == 1
+    assert summary.totals.claude_usage_limit_wait_occurred is True
+    assert summary.totals.codex_usage_limit_wait_occurred is False
+
+
+def test_daily_summary_uses_inclusive_local_midnight_and_exclusive_next_midnight(
+    application,
+) -> None:
+    tasks, _agents, factory, project = application
+    selected = date(2031, 4, 5)
+    start, end = _local_day_utc_range(selected)
+    finish_times = (
+        start - timedelta(microseconds=1),
+        start,
+        end - timedelta(microseconds=1),
+        end,
+    )
+    created = [tasks.create(draft(project, title=f"boundary-{index}")) for index in range(4)]
+
+    with factory() as session:
+        repo = TaskRepository(session)
+        runs = TaskRunRepository(session)
+        for task_view, finished_at in zip(created, finish_times, strict=True):
+            task = repo.get(task_view.id)
+            repo.set_status(task, TaskStatus.CANCELLED)
+            task.finished_at = finished_at
+            runs.add(
+                TaskRun(
+                    task_id=task.id,
+                    agent=AgentName.CODEX,
+                    attempt=1,
+                    command=["codex"],
+                    started_at=finished_at - timedelta(seconds=10),
+                    finished_at=finished_at,
+                    error_type=ErrorType.CANCELLED,
+                )
+            )
+        session.commit()
+
+    summary = tasks.daily_summary(selected)
+
+    assert summary.start_utc == start
+    assert summary.end_utc == end
+    assert summary.totals.cancelled_count == 2
+    assert summary.totals.codex_run_count == 2
+    assert summary.totals.total_runtime_seconds == 20
+
+
+def test_daily_summary_returns_zero_totals_for_empty_day(application) -> None:
+    tasks, _agents, _factory, _project = application
+
+    summary = tasks.daily_summary(date(2040, 1, 1))
+
+    assert summary.projects == ()
+    assert summary.totals.project_count == 0
+    assert summary.totals.succeeded_count == 0
+    assert summary.totals.failed_count == 0
+    assert summary.totals.blocked_count == 0
+    assert summary.totals.cancelled_count == 0
+    assert summary.totals.total_runtime_seconds == 0
+    assert summary.totals.claude_run_count == 0
+    assert summary.totals.codex_run_count == 0
+    assert summary.totals.fallback_count == 0
+    assert summary.totals.worktree_branches == ()
+    assert summary.totals.claude_usage_limit_wait_occurred is False
+    assert summary.totals.codex_usage_limit_wait_occurred is False
+
+
+def _local_day_utc_range(value: date) -> tuple[datetime, datetime]:
+    start = datetime(value.year, value.month, value.day).astimezone()
+    next_day = value + timedelta(days=1)
+    end = datetime(next_day.year, next_day.month, next_day.day).astimezone()
+    return (
+        start.astimezone(UTC).replace(tzinfo=None),
+        end.astimezone(UTC).replace(tzinfo=None),
+    )
 
 
 def test_create_and_update_enforce_path_policy_and_waiting_only(application, tmp_path) -> None:

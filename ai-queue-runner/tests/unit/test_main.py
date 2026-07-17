@@ -1,7 +1,7 @@
 import json
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ai_queue_runner.application.task_service import TaskService
 from ai_queue_runner.config.loader import load_config
@@ -587,6 +587,81 @@ def test_cli_set_agent_and_queue_status_report_automation_state(tmp_path, capsys
     text = capsys.readouterr().out
     assert "global_auto_run: false" in text
     assert "승인 대기(reserved):" in text
+
+
+def test_cli_daily_summary_json_has_stable_machine_readable_structure(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    task_id = add_waiting_task(config_path, allowed_root, capsys, title="완료 작업")
+    selected = "2032-06-07"
+    local_finish = datetime.strptime(selected, "%Y-%m-%d").replace(hour=12).astimezone()
+    finished_at = local_finish.astimezone(UTC).replace(tzinfo=None)
+    config = load_config(config_path)
+    engine = create_db_engine(config.app.db_path)
+    with make_session_factory(engine)() as session:
+        repo = TaskRepository(session)
+        task = repo.get(task_id)
+        repo.set_status(task, TaskStatus.RESERVED)
+        repo.set_status(task, TaskStatus.RUNNING)
+        repo.set_status(task, TaskStatus.SUCCEEDED)
+        task.finished_at = finished_at
+        TaskRunRepository(session).add(
+            TaskRun(
+                task_id=task_id,
+                agent=AgentName.CODEX,
+                attempt=1,
+                command=["codex"],
+                started_at=finished_at - timedelta(minutes=5),
+                finished_at=finished_at,
+                exit_code=0,
+            )
+        )
+        session.commit()
+    engine.dispose()
+
+    assert main(
+        cli_args(config_path, "daily-summary", "--date", selected, "--json")
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert set(payload) == {"date", "period", "projects", "totals"}
+    assert payload["date"] == selected
+    assert set(payload["period"]) == {"start_utc", "end_utc"}
+    assert len(payload["projects"]) == 1
+    project = payload["projects"][0]
+    assert set(project) == {
+        "project_path",
+        "task_counts",
+        "total_runtime_seconds",
+        "agent_run_counts",
+        "fallback_count",
+        "worktree_branches",
+        "failed_tasks",
+    }
+    assert project["task_counts"] == {
+        "succeeded": 1,
+        "failed": 0,
+        "blocked": 0,
+        "cancelled": 0,
+    }
+    assert project["agent_run_counts"] == {"claude": 0, "codex": 1}
+    assert project["total_runtime_seconds"] == 300
+    assert payload["totals"]["usage_limit_wait_occurred"] == {
+        "claude": False,
+        "codex": False,
+    }
+
+    assert main(
+        cli_args(config_path, "daily-summary", "--date", "2040-01-01", "--json")
+    ) == 0
+    empty = json.loads(capsys.readouterr().out)
+    assert empty["projects"] == []
+    assert empty["totals"]["project_count"] == 0
+    assert empty["totals"]["task_counts"] == {
+        "succeeded": 0,
+        "failed": 0,
+        "blocked": 0,
+        "cancelled": 0,
+    }
 
 
 def test_cli_not_before_converts_local_time_to_naive_utc(tmp_path, capsys):

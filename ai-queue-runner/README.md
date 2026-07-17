@@ -57,7 +57,7 @@ allowed_project_roots = ["C:/Users/me/projects"]
 
 ## AI/CLI 연동
 
-GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `queue-status`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`), worktree 정리(`cleanup-worktree`), 에이전트 상태(`set-agent`), 토큰 배치 계획(`plan-batch`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
+GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `queue-status`, `daily-summary`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`), worktree 정리(`cleanup-worktree`), 에이전트 상태(`set-agent`), 토큰 배치 계획(`plan-batch`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
 
 ```powershell
 # AI 도우미가 특정 프로젝트의 작업을 등록
@@ -77,9 +77,15 @@ GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전�
 
 # 기계 판독 가능한 출력(열거형은 문자열, 시각은 UTC ISO-8601)
 ..\.venv\Scripts\python -m ai_queue_runner --config config.toml --json list-tasks
+
+# 오늘 또는 지정한 로컬 날짜의 프로젝트별 실행 결과 요약
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml daily-summary --json
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml daily-summary `
+  --date 2026-07-17 --json
 ```
 
 `--not-before "YYYY-MM-DD HH:MM"`은 실행하는 PC의 로컬 시간으로 해석해 DB에는 UTC로 저장합니다. `--json`은 각 하위 명령 뒤에도 지정할 수 있습니다.
+달력 탭에서는 날짜를 선택한 뒤 **이 날짜 요약** 버튼으로 같은 집계를 확인할 수 있습니다.
 
 ### 토큰 작업량 배치 계획
 
