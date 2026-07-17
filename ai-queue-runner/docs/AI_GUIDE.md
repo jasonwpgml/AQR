@@ -37,6 +37,7 @@
 | `list-tasks` | 목록 조회 | `--status {waiting,reserved,running,succeeded,failed,retry_wait,blocked,cancelled,archived}` |
 | `show-task ID` | 상세 + 최근 5회 실행 | `recurrence`, `recurrence_interval_days`, `recurrence_source_task_id`로 반복 체인 확인 |
 | `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run` |
+| `daily-summary` | 로컬 날짜의 프로젝트별 종료 활동 요약 | `--date YYYY-MM-DD`(생략 시 오늘), 완료·실패·차단·취소·실행·fallback·worktree·사용량 제한 |
 | `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
 | `cleanup-worktree ID` | 병합 완료된 종료 작업의 worktree 제거 | dirty/미병합 커밋이면 거부, 브랜치는 유지 |
 | `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`, `--repeat`, `--clear-repeat`, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
@@ -47,6 +48,69 @@
 | `archive-task ID` | 성공(succeeded) 작업 보관 | |
 | `delete-task ID` | 작업+실행 기록 영구 삭제 | reserved/running은 불가, 의존 작업 있으면 불가 |
 | `set-agent AGENT STATE` | 에이전트 수동 상태 설정 | `claude|codex` × `available|cooldown|disabled`, cooldown은 `--until "YYYY-MM-DD HH:MM"` |
+
+## 프로젝트별 일일 작업 요약
+
+`daily-summary`는 지정한 날짜의 로컬 자정부터 다음 날 로컬 자정 직전까지를 UTC로
+변환해 집계합니다. 완료·실패·취소는 `tasks.finished_at`, 차단은 상태 전이 시각인
+`tasks.updated_at`, 실행 관련 항목은 `task_runs.finished_at`이 이 구간에 속할 때
+포함됩니다. 따라서 전날 시작해 자정 뒤 끝난 실행은 결과가 나온 날짜에 귀속됩니다.
+
+```powershell
+... daily-summary --json
+... daily-summary --date 2026-07-17 --json
+```
+
+JSON 스키마는 다음 구조로 고정됩니다. `task_counts`와 `agent_run_counts`,
+`usage_limit_wait_occurred`는 값이 0/false여도 두 상태·에이전트 키를 항상 포함합니다.
+`total_runtime_seconds`는 종료 실행의 `finished_at - started_at` 합계입니다.
+
+```json
+{
+  "date": "2026-07-17",
+  "period": {
+    "start_utc": "2026-07-16T15:00:00Z",
+    "end_utc": "2026-07-17T15:00:00Z"
+  },
+  "projects": [
+    {
+      "project_path": "C:\\projects\\sample",
+      "task_counts": {
+        "succeeded": 2,
+        "failed": 1,
+        "blocked": 0,
+        "cancelled": 0
+      },
+      "total_runtime_seconds": 5400.0,
+      "agent_run_counts": {"claude": 1, "codex": 2},
+      "fallback_count": 1,
+      "worktree_branches": ["aqr/T42"],
+      "failed_tasks": [
+        {"id": 42, "title": "회귀 테스트", "last_error_type": "timeout"}
+      ]
+    }
+  ],
+  "totals": {
+    "project_count": 1,
+    "task_counts": {
+      "succeeded": 2,
+      "failed": 1,
+      "blocked": 0,
+      "cancelled": 0
+    },
+    "total_runtime_seconds": 5400.0,
+    "agent_run_counts": {"claude": 1, "codex": 2},
+    "fallback_count": 1,
+    "worktree_branches": ["aqr/T42"],
+    "failed_task_count": 1,
+    "usage_limit_wait_occurred": {"claude": false, "codex": true}
+  }
+}
+```
+
+활동이 전혀 없는 날도 성공(종료 코드 0)이며 `projects`는 빈 배열, `totals`는 0과
+false로 채워집니다. 현재 스키마에는 상태 전이 이력 테이블이 없으므로, 나중에 재시도·취소된
+작업의 과거 실패/차단 상태는 복원하지 않고 조회 시점에 해당 날짜의 종료 상태인 작업만 셉니다.
 
 ## 토큰 기반 배치 계획
 

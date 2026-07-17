@@ -221,6 +221,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_subcommand_json_option(queue_status)
 
+    daily_summary = subcommands.add_parser(
+        "daily-summary", help="summarize one local date of queue activity by project"
+    )
+    daily_summary.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD",
+        help="local date; defaults to today",
+    )
+    _add_subcommand_json_option(daily_summary)
+
     plan_batch = subcommands.add_parser(
         "plan-batch",
         help="distribute a token-budgeted JSON workload and enqueue it atomically",

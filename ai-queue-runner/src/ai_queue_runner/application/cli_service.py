@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +151,10 @@ def _dispatch(
         )
     if args.command == "queue-status":
         return _queue_status(args, service, agents, config)
+    if args.command == "daily-summary":
+        summary = service.daily_summary(_parse_local_date(args.date))
+        payload = _daily_summary_record(summary)
+        return _json_or_text(payload, _daily_summary_text(payload), args.json)
     if args.command == "plan-batch":
         return _plan_batch(args, service)
     if args.command == "cleanup-worktree":
@@ -353,6 +357,17 @@ def _parse_local_datetime(value: str | None) -> datetime | None:
     return local.astimezone(UTC).replace(tzinfo=None)
 
 
+def _parse_local_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    if len(value) != 10 or value[4] != "-" or value[7] != "-":
+        raise CliUsageError("--date는 YYYY-MM-DD 형식이어야 합니다.")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise CliUsageError("--date는 YYYY-MM-DD 형식이어야 합니다.") from exc
+
+
 def _parse_recurrence_interval(value: str | None) -> int | None:
     if value is None:
         return None
@@ -436,6 +451,112 @@ def _run_record(run: object) -> dict[str, Any]:
         "worktree_path": run.worktree_path,
         "worktree_branch": run.worktree_branch,
     }
+
+
+def _daily_summary_record(summary: object) -> dict[str, Any]:
+    projects = [
+        {
+            "project_path": project.project_path,
+            "task_counts": _daily_task_counts(project),
+            "total_runtime_seconds": project.total_runtime_seconds,
+            "agent_run_counts": {
+                "claude": project.claude_run_count,
+                "codex": project.codex_run_count,
+            },
+            "fallback_count": project.fallback_count,
+            "worktree_branches": list(project.worktree_branches),
+            "failed_tasks": [
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "last_error_type": _enum_value(task.last_error_type),
+                }
+                for task in project.failed_tasks
+            ],
+        }
+        for project in summary.projects
+    ]
+    totals = summary.totals
+    return {
+        "date": summary.local_date.isoformat(),
+        "period": {
+            "start_utc": _utc_iso(summary.start_utc),
+            "end_utc": _utc_iso(summary.end_utc),
+        },
+        "projects": projects,
+        "totals": {
+            "project_count": totals.project_count,
+            "task_counts": _daily_task_counts(totals),
+            "total_runtime_seconds": totals.total_runtime_seconds,
+            "agent_run_counts": {
+                "claude": totals.claude_run_count,
+                "codex": totals.codex_run_count,
+            },
+            "fallback_count": totals.fallback_count,
+            "worktree_branches": list(totals.worktree_branches),
+            "failed_task_count": totals.failed_task_count,
+            "usage_limit_wait_occurred": {
+                "claude": totals.claude_usage_limit_wait_occurred,
+                "codex": totals.codex_usage_limit_wait_occurred,
+            },
+        },
+    }
+
+
+def _daily_task_counts(value: object) -> dict[str, int]:
+    return {
+        "succeeded": value.succeeded_count,
+        "failed": value.failed_count,
+        "blocked": value.blocked_count,
+        "cancelled": value.cancelled_count,
+    }
+
+
+def _daily_summary_text(payload: dict[str, Any]) -> str:
+    totals = payload["totals"]
+    lines = [
+        f"일일 작업 요약: {payload['date']} (로컬)",
+        _daily_counts_text("전체", totals),
+        "사용량 제한 대기 발생: "
+        + ", ".join(
+            f"{agent}={'예' if occurred else '아니오'}"
+            for agent, occurred in totals["usage_limit_wait_occurred"].items()
+        ),
+    ]
+    if not payload["projects"]:
+        lines.append("프로젝트 활동이 없습니다.")
+        return "\n".join(lines)
+    for project in payload["projects"]:
+        lines.extend(("", project["project_path"], _daily_counts_text("  결과", project)))
+        branches = ", ".join(project["worktree_branches"]) or "-"
+        lines.append(f"  worktree 브랜치: {branches}")
+        if project["failed_tasks"]:
+            lines.append("  실패 작업:")
+            lines.extend(
+                f"    #{task['id']} {task['title']} "
+                f"(오류: {task['last_error_type'] or '-'})"
+                for task in project["failed_tasks"]
+            )
+    return "\n".join(lines)
+
+
+def _daily_counts_text(label: str, value: dict[str, Any]) -> str:
+    counts = value["task_counts"]
+    agents = value["agent_run_counts"]
+    return (
+        f"{label}: 완료={counts['succeeded']} 실패={counts['failed']} "
+        f"차단={counts['blocked']} 취소={counts['cancelled']} · "
+        f"실행 시간={_duration_text(value['total_runtime_seconds'])} · "
+        f"실행 claude={agents['claude']} codex={agents['codex']} · "
+        f"fallback={value['fallback_count']}"
+    )
+
+
+def _duration_text(seconds: float) -> str:
+    rounded = max(0, round(seconds))
+    hours, remainder = divmod(rounded, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _task_table(records: list[dict[str, Any]]) -> str:

@@ -7,8 +7,10 @@ agent state) in one transaction — required by plan §5.4.
 
 from __future__ import annotations
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from datetime import datetime
+
+from sqlalchemy import case, select
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentName, TaskStatus
@@ -37,6 +39,34 @@ class TaskRepository:
         stmt = select(Task).order_by(Task.id)
         if status is not None:
             stmt = stmt.where(Task.status == status)
+        return list(self._session.scalars(stmt))
+
+    def list_terminal_activity_between(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> list[Task]:
+        activity_at = case(
+            (Task.status == TaskStatus.BLOCKED, Task.updated_at),
+            else_=Task.finished_at,
+        )
+        stmt = (
+            select(Task)
+            .options(selectinload(Task.runs))
+            .where(
+                Task.status.in_(
+                    (
+                        TaskStatus.SUCCEEDED,
+                        TaskStatus.FAILED,
+                        TaskStatus.BLOCKED,
+                        TaskStatus.CANCELLED,
+                    )
+                ),
+                activity_at >= start_utc,
+                activity_at < end_utc,
+            )
+            .order_by(Task.project_path, Task.id)
+        )
         return list(self._session.scalars(stmt))
 
     def delete(self, task: Task) -> None:
@@ -84,6 +114,22 @@ class TaskRunRepository:
             select(TaskRun)
             .where(TaskRun.task_id == task_id)
             .order_by(TaskRun.attempt, TaskRun.id)
+        )
+        return list(self._session.scalars(stmt))
+
+    def list_finished_between(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> list[TaskRun]:
+        stmt = (
+            select(TaskRun)
+            .options(joinedload(TaskRun.task))
+            .where(
+                TaskRun.finished_at >= start_utc,
+                TaskRun.finished_at < end_utc,
+            )
+            .order_by(TaskRun.finished_at, TaskRun.id)
         )
         return list(self._session.scalars(stmt))
 

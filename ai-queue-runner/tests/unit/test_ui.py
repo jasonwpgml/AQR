@@ -430,6 +430,7 @@ def test_approval_dialog_uses_worktree_execution_path(app):
 class FakeTaskService:
     def __init__(self, tasks):
         self.tasks = tasks
+        self.summary_dates = []
 
     def list(self, status=None):
         if status is None:
@@ -452,6 +453,22 @@ class FakeTaskService:
                 )
             )
         ]
+
+    def daily_summary(self, selected_date):
+        self.summary_dates.append(selected_date)
+        totals = SimpleNamespace(
+            succeeded_count=0,
+            failed_count=0,
+            blocked_count=0,
+            cancelled_count=0,
+            total_runtime_seconds=0,
+            claude_run_count=0,
+            codex_run_count=0,
+            fallback_count=0,
+            claude_usage_limit_wait_occurred=False,
+            codex_usage_limit_wait_occurred=False,
+        )
+        return SimpleNamespace(totals=totals, projects=())
 
     def list_runs(self, task_id):
         return []
@@ -573,6 +590,25 @@ def test_calendar_marks_and_groups_activity_for_selected_local_date(app):
     assert any("취소된 작업" in text for text in grouped["실패·취소"])
     assert any("예정 작업" in text for text in grouped["예정"])
     assert any("생성된 작업" in text for text in grouped["생성"])
+    view.close()
+
+
+def test_calendar_summary_button_opens_selected_date_summary(app, monkeypatch):
+    service = FakeTaskService([])
+    selected = datetime.now().astimezone().date()
+    shown = []
+    monkeypatch.setattr(
+        "ai_queue_runner.ui.calendar_view.QMessageBox.information",
+        lambda _parent, title, text: shown.append((title, text)),
+    )
+    view = CalendarView(service)
+    view.calendar.setSelectedDate(QDate(selected.year, selected.month, selected.day))
+
+    view.summary_button.click()
+
+    assert service.summary_dates == [selected]
+    assert shown[0][0] == f"{selected.isoformat()} 일일 요약"
+    assert "프로젝트 활동이 없습니다." in shown[0][1]
     view.close()
 
 

@@ -7,13 +7,13 @@
 ```mermaid
 flowchart TB
     subgraph UI["ui/ · PySide6"]
-        MW[메인 창·작업 표·상세]
+        MW[메인 창·작업 표·달력 일일 요약]
         DLG[작업/승인 대화상자]
         TRAY[시스템 트레이·알림]
     end
 
     subgraph APP["application/ · 유스케이스"]
-        TASK[TaskService\nCRUD·맨 위·보관]
+        TASK[TaskService\nCRUD·맨 위·보관·일일 집계]
         PLAN[WorkloadPlanning\n토큰 예산·결정적 분배]
         AGENT[AgentService]
         RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
@@ -247,7 +247,7 @@ flowchart TD
 | 경로 | 역할 |
 |---|---|
 | `application/runtime.py` | APScheduler 틱, asyncio 실행 루프, 승인·거절·중단 |
-| `application/task_service.py` | 작업 CRUD·복제·재시도·맨 위 이동·완료 보관·의존성 검증 |
+| `application/task_service.py` | 작업 CRUD·복제·재시도·맨 위 이동·완료 보관·의존성 검증·프로젝트별 일일 집계 |
 | `application/workload_planning.py` | 명시적 토큰 예산 검증·결정적 Claude/Codex 분배 |
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |

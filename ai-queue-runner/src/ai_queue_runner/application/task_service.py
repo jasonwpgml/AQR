@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -138,6 +139,64 @@ class CalendarActivityView:
     not_before: datetime | None
 
 
+@dataclass(frozen=True)
+class FailedTaskDailySummaryView:
+    id: int
+    title: str
+    last_error_type: ErrorType | None
+
+
+@dataclass(frozen=True)
+class ProjectDailySummaryView:
+    project_path: str
+    succeeded_count: int
+    failed_count: int
+    blocked_count: int
+    cancelled_count: int
+    total_runtime_seconds: float
+    claude_run_count: int
+    codex_run_count: int
+    fallback_count: int
+    worktree_branches: tuple[str, ...]
+    failed_tasks: tuple[FailedTaskDailySummaryView, ...]
+
+
+@dataclass(frozen=True)
+class DailySummaryTotalsView:
+    project_count: int
+    succeeded_count: int
+    failed_count: int
+    blocked_count: int
+    cancelled_count: int
+    total_runtime_seconds: float
+    claude_run_count: int
+    codex_run_count: int
+    fallback_count: int
+    worktree_branches: tuple[str, ...]
+    failed_task_count: int
+    claude_usage_limit_wait_occurred: bool
+    codex_usage_limit_wait_occurred: bool
+
+
+@dataclass(frozen=True)
+class DailySummaryView:
+    local_date: date
+    start_utc: datetime
+    end_utc: datetime
+    projects: tuple[ProjectDailySummaryView, ...]
+    totals: DailySummaryTotalsView
+
+
+@dataclass
+class _ProjectDailyAccumulator:
+    status_counts: Counter[TaskStatus] = field(default_factory=Counter)
+    agent_run_counts: Counter[AgentName] = field(default_factory=Counter)
+    total_runtime_seconds: float = 0.0
+    fallback_count: int = 0
+    worktree_branches: set[str] = field(default_factory=set)
+    failed_tasks: list[FailedTaskDailySummaryView] = field(default_factory=list)
+
+
 class TaskService:
     """One-session-per-operation facade for desktop and runtime callers."""
 
@@ -180,6 +239,98 @@ class TaskService:
                     for value in (task.created_at, task.finished_at, task.not_before)
                 )
             ]
+
+    def daily_summary(self, local_date: date | None = None) -> DailySummaryView:
+        selected_date = local_date or _local_today()
+        start_utc, end_utc = _local_date_utc_range(selected_date)
+        with self._session_factory() as session:
+            task_repo = TaskRepository(session)
+            run_repo = TaskRunRepository(session)
+            terminal_tasks = task_repo.list_terminal_activity_between(start_utc, end_utc)
+            finished_runs = run_repo.list_finished_between(start_utc, end_utc)
+
+            projects: dict[str, _ProjectDailyAccumulator] = {}
+
+            def project_for(path: str) -> _ProjectDailyAccumulator:
+                return projects.setdefault(path, _ProjectDailyAccumulator())
+
+            for task in terminal_tasks:
+                project = project_for(task.project_path)
+                project.status_counts[task.status] += 1
+                if task.worktree_branch:
+                    project.worktree_branches.add(task.worktree_branch)
+                if task.status is TaskStatus.FAILED:
+                    latest_run = max(
+                        task.runs,
+                        key=lambda run: (run.finished_at or run.started_at, run.id),
+                        default=None,
+                    )
+                    project.failed_tasks.append(
+                        FailedTaskDailySummaryView(
+                            id=task.id,
+                            title=task.title,
+                            last_error_type=(
+                                None if latest_run is None else latest_run.error_type
+                            ),
+                        )
+                    )
+
+            usage_limit_wait = {agent: False for agent in AgentName}
+            for run in finished_runs:
+                project = project_for(run.task.project_path)
+                project.agent_run_counts[run.agent] += 1
+                project.total_runtime_seconds += max(
+                    0.0,
+                    (run.finished_at - run.started_at).total_seconds(),
+                )
+                if run.fallback_to_agent is not None:
+                    project.fallback_count += 1
+                if run.worktree_branch:
+                    project.worktree_branches.add(run.worktree_branch)
+                if run.error_type is ErrorType.USAGE_LIMIT:
+                    usage_limit_wait[run.agent] = True
+
+            project_views = tuple(
+                _to_project_daily_summary(path, projects[path])
+                for path in sorted(projects, key=str.casefold)
+            )
+            all_branches = tuple(
+                sorted(
+                    {
+                        branch
+                        for project in project_views
+                        for branch in project.worktree_branches
+                    }
+                )
+            )
+            totals = DailySummaryTotalsView(
+                project_count=len(project_views),
+                succeeded_count=sum(project.succeeded_count for project in project_views),
+                failed_count=sum(project.failed_count for project in project_views),
+                blocked_count=sum(project.blocked_count for project in project_views),
+                cancelled_count=sum(project.cancelled_count for project in project_views),
+                total_runtime_seconds=sum(
+                    project.total_runtime_seconds for project in project_views
+                ),
+                claude_run_count=sum(
+                    project.claude_run_count for project in project_views
+                ),
+                codex_run_count=sum(project.codex_run_count for project in project_views),
+                fallback_count=sum(project.fallback_count for project in project_views),
+                worktree_branches=all_branches,
+                failed_task_count=sum(
+                    len(project.failed_tasks) for project in project_views
+                ),
+                claude_usage_limit_wait_occurred=usage_limit_wait[AgentName.CLAUDE],
+                codex_usage_limit_wait_occurred=usage_limit_wait[AgentName.CODEX],
+            )
+            return DailySummaryView(
+                local_date=selected_date,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                projects=project_views,
+                totals=totals,
+            )
 
     def create(self, draft: TaskDraft) -> TaskView:
         return self.create_batch([draft])[0]
@@ -436,6 +587,42 @@ def _to_calendar_activity_view(task: Task) -> CalendarActivityView:
         created_at=task.created_at,
         finished_at=task.finished_at,
         not_before=task.not_before,
+    )
+
+
+def _to_project_daily_summary(
+    project_path: str,
+    value: _ProjectDailyAccumulator,
+) -> ProjectDailySummaryView:
+    return ProjectDailySummaryView(
+        project_path=project_path,
+        succeeded_count=value.status_counts[TaskStatus.SUCCEEDED],
+        failed_count=value.status_counts[TaskStatus.FAILED],
+        blocked_count=value.status_counts[TaskStatus.BLOCKED],
+        cancelled_count=value.status_counts[TaskStatus.CANCELLED],
+        total_runtime_seconds=value.total_runtime_seconds,
+        claude_run_count=value.agent_run_counts[AgentName.CLAUDE],
+        codex_run_count=value.agent_run_counts[AgentName.CODEX],
+        fallback_count=value.fallback_count,
+        worktree_branches=tuple(sorted(value.worktree_branches)),
+        failed_tasks=tuple(sorted(value.failed_tasks, key=lambda task: task.id)),
+    )
+
+
+def _local_today() -> date:
+    return utcnow().replace(tzinfo=UTC).astimezone().date()
+
+
+def _local_date_utc_range(value: date) -> tuple[datetime, datetime]:
+    try:
+        next_date = value + timedelta(days=1)
+    except OverflowError as exc:
+        raise ValueError("daily summary date is out of range") from exc
+    start_local = datetime.combine(value, time.min).astimezone()
+    end_local = datetime.combine(next_date, time.min).astimezone()
+    return (
+        start_local.astimezone(UTC).replace(tzinfo=None),
+        end_local.astimezone(UTC).replace(tzinfo=None),
     )
 
 
