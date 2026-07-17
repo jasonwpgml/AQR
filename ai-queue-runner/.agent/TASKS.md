@@ -30,3 +30,4 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T025 approval UX: dedup dialogs, reject→blocked, auto run-now, reserved cancel fix
 [done] T026 headless CLI full queue control (update/retry/duplicate/move-top/archive/delete/set-agent/queue-status) + AI guide
 [done] T027 token-aware workload planning, deterministic Claude/Codex distribution, and atomic batch enqueue
+[done] T028 plan cleanup: mark implemented adapters and usage reset parsing as complete

@@ -1,12 +1,12 @@
 ```yaml
 phase: 7
-current_goal: "token-aware multi-agent workload distribution"
-active_task: "T027"
+current_goal: "plan status marker cleanup"
+active_task: "T028"
 owner: codex
 status: done
 blocked_by: null
 last_verified:
-  command: "pytest -q; ruff check src tests; scripts/build_windows.ps1 -SkipInstall"
-  result: "261 passed in 19.10s; All checks passed; Windows onedir build succeeded"
-next: "user review; commit when requested"
+  command: "git diff --stat"
+  result: "Markdown-only changes in ../AI_QUEUE_RUNNER_PLAN.md, .agent/STATE.md, .agent/TASKS.md, .agent/HANDOFF.md"
+next: "Claude review; commit when requested"
 ```
