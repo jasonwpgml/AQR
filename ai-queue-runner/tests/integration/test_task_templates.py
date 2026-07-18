@@ -33,12 +33,14 @@ def test_template_save_overwrite_get_list_delete_roundtrip(templates) -> None:
             priority=70,
             estimated_tokens=12000,
             auto_commit=True,
+            draft_pr=True,
             tags=["implementation"],
         ),
     )
     assert overwritten is False
     assert created.name == "feature"
     assert created.auto_commit is True
+    assert created.draft_pr is True
     assert created.created_by is TaskCreator.USER
     assert templates.get("feature") == created
     assert templates.list() == [created]
@@ -102,3 +104,12 @@ def test_template_render_substitutes_rejects_missing_and_prioritizes_overrides(
     assert overridden.prompt == "직접 프롬프트"
     assert overridden.agent_policy.value == "claude"
     assert overridden.priority == 99
+
+
+def test_template_rejects_draft_pr_without_auto_commit() -> None:
+    with pytest.raises(ValueError, match="draft_pr requires auto_commit"):
+        TaskTemplateDraft(
+            title="PR",
+            prompt="create PR",
+            draft_pr=True,
+        )

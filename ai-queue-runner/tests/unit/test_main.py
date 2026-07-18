@@ -127,6 +127,7 @@ def test_cli_add_task_uses_real_service_and_rejects_outside_path(tmp_path, capsy
         "--priority",
         75,
         "--auto-commit",
+        "--draft-pr",
         as_json=True,
     )
 
@@ -142,6 +143,7 @@ def test_cli_add_task_uses_real_service_and_rejects_outside_path(tmp_path, capsy
     assert created.agent_policy.value == "codex"
     assert created.priority == 75
     assert created.auto_commit is True
+    assert created.draft_pr is True
     assert created.project_path == str(project.resolve())
     engine.dispose()
 
@@ -162,6 +164,27 @@ def test_cli_add_task_uses_real_service_and_rejects_outside_path(tmp_path, capsy
     assert "요청을 처리할 수 없습니다" in error
     assert "outside allowed roots" in error
     assert "Traceback" not in error
+
+
+def test_cli_rejects_draft_pr_without_auto_commit(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    project = allowed_root / "project"
+    project.mkdir()
+
+    args = cli_args(
+        config_path,
+        "add-task",
+        "--title",
+        "invalid draft PR",
+        "--prompt",
+        "must not enqueue",
+        "--project",
+        project,
+        "--draft-pr",
+    )
+
+    assert main(args) == 2
+    assert "draft_pr requires auto_commit" in capsys.readouterr().err
 
 
 def test_cli_scopes_tasks_by_project_creator_and_preserves_delete_events(
@@ -414,6 +437,8 @@ def test_cli_list_filter_show_and_json_include_stable_fields(tmp_path, capsys):
                 fallback_to_agent=AgentName.CLAUDE,
                 auto_commit_hash="abc123",
                 auto_commit_result="committed",
+                draft_pr_url="https://github.example/owner/repo/pull/7",
+                draft_pr_result="created draft PR",
             )
         )
         session.commit()
@@ -437,12 +462,15 @@ def test_cli_list_filter_show_and_json_include_stable_fields(tmp_path, capsys):
     assert shown["recent_runs"][0]["fallback_to_agent"] == "claude"
     assert shown["recent_runs"][0]["auto_commit_hash"] == "abc123"
     assert shown["recent_runs"][0]["auto_commit_result"] == "committed"
+    assert shown["recent_runs"][0]["draft_pr_url"].endswith("/pull/7")
+    assert shown["recent_runs"][0]["draft_pr_result"] == "created draft PR"
 
     assert main(cli_args(config_path, "show-task", first["id"])) == 0
     text = capsys.readouterr().out
     assert "last_error: -" in text
     assert "fallback=codex->claude" in text
     assert "auto_commit=abc123" in text
+    assert "draft_pr=https://github.example/owner/repo/pull/7" in text
     assert "result_summary=테스트 통과" in text
 
 
@@ -632,6 +660,7 @@ def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
         "--estimated-tokens",
         1_500,
         "--auto-commit",
+        "--draft-pr",
         as_json=True,
     )
     assert main(args) == 0
@@ -640,6 +669,7 @@ def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
     assert payload["priority"] == 90
     assert payload["estimated_tokens"] == 1_500
     assert payload["auto_commit"] is True
+    assert payload["draft_pr"] is True
     assert payload["title"] == "원래 제목"
     assert payload["agent_policy"] == "any"
 
@@ -648,11 +678,14 @@ def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
             config_path,
             "update-task",
             task_id,
+            "--no-draft-pr",
             "--no-auto-commit",
             as_json=True,
         )
     ) == 0
-    assert json.loads(capsys.readouterr().out)["auto_commit"] is False
+    disabled = json.loads(capsys.readouterr().out)
+    assert disabled["auto_commit"] is False
+    assert disabled["draft_pr"] is False
 
     conflict = cli_args(
         config_path,

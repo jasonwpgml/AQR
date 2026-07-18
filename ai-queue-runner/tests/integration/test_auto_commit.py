@@ -17,11 +17,22 @@ from ai_queue_runner.infrastructure.database import (
     init_db,
     make_session_factory,
 )
+from ai_queue_runner.infrastructure.draft_pr import DraftPrResult
 from ai_queue_runner.infrastructure.process_runner import ProcessRunner
 from ai_queue_runner.infrastructure.repositories import (
     AgentStateRepository,
     TaskRepository,
 )
+
+
+class FakeDraftPrPublisher:
+    def __init__(self, result: DraftPrResult) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    def publish(self, _cwd: Path | str, **kwargs: object) -> DraftPrResult:
+        self.calls.append(kwargs)
+        return self.result
 
 
 def _git(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -52,11 +63,15 @@ async def _execute(
     config_enabled: bool,
     task_enabled: bool,
     script: str,
+    draft_config_enabled: bool = False,
+    draft_task_enabled: bool = False,
+    draft_pr_publisher: FakeDraftPrPublisher | None = None,
 ):
     config = AppConfig()
     config.app.allowed_project_roots = [tmp_path]
     config.app.logs_dir = tmp_path / "logs"
     config.scheduler.auto_commit_enabled = config_enabled
+    config.scheduler.draft_pr_enabled = draft_config_enabled
     engine = create_db_engine(tmp_path / "queue.db")
     init_db(engine)
     factory = make_session_factory(engine)
@@ -70,6 +85,7 @@ async def _execute(
                 project_path=str(project),
                 agent_policy=AgentName.CLAUDE.value,
                 auto_commit=task_enabled,
+                draft_pr=draft_task_enabled,
             )
         )
         session.commit()
@@ -79,7 +95,11 @@ async def _execute(
             name=AgentName.CLAUDE,
             command=[sys.executable, "-c", script],
         )
-        run = await ExecutionService(config, ProcessRunner()).execute(
+        run = await ExecutionService(
+            config,
+            ProcessRunner(),
+            draft_pr_publisher=draft_pr_publisher,
+        ).execute(
             session,
             reserved,
             adapter,
@@ -91,6 +111,8 @@ async def _execute(
             run.auto_commit_hash,
             run.auto_commit_result,
             run.id,
+            run.draft_pr_url,
+            run.draft_pr_result,
         )
     engine.dispose()
     return result
@@ -108,7 +130,7 @@ async def test_auto_commit_requires_both_opt_ins(
     project = tmp_path / "project"
     _init_repository(project)
 
-    status, commit_hash, result, _run_id = await _execute(
+    status, commit_hash, result, _run_id, *_draft = await _execute(
         tmp_path,
         project,
         config_enabled=config_enabled,
@@ -129,7 +151,7 @@ async def test_successful_run_commits_changes_and_records_hash(tmp_path: Path) -
     project = tmp_path / "project"
     _init_repository(project)
 
-    status, commit_hash, result, run_id = await _execute(
+    status, commit_hash, result, run_id, *_draft = await _execute(
         tmp_path,
         project,
         config_enabled=True,
@@ -153,7 +175,79 @@ async def test_successful_run_commits_changes_and_records_hash(tmp_path: Path) -
     assert "Agent: claude" in body
 
 
-async def test_auto_commit_uses_the_prepared_worktree_as_git_cwd(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("draft_config_enabled", "draft_task_enabled"),
+    [(False, True), (True, False)],
+)
+async def test_draft_pr_requires_both_opt_ins(
+    tmp_path: Path,
+    draft_config_enabled: bool,
+    draft_task_enabled: bool,
+) -> None:
+    project = tmp_path / "project"
+    _init_repository(project)
+    publisher = FakeDraftPrPublisher(DraftPrResult("https://invalid/pr/1", "created"))
+
+    status, commit_hash, result, _run_id, *_draft = await _execute(
+        tmp_path,
+        project,
+        config_enabled=True,
+        task_enabled=True,
+        script=(
+            "from pathlib import Path; "
+            "Path('generated.txt').write_text('generated\\n', encoding='utf-8')"
+        ),
+        draft_config_enabled=draft_config_enabled,
+        draft_task_enabled=draft_task_enabled,
+        draft_pr_publisher=publisher,
+    )
+
+    assert status is TaskStatus.SUCCEEDED
+    assert commit_hash is not None
+    assert result == "committed"
+    assert publisher.calls == []
+
+
+async def test_draft_pr_records_missing_automatic_commit(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _init_repository(project)
+    publisher = FakeDraftPrPublisher(DraftPrResult("https://invalid/pr/1", "created"))
+
+    status, commit_hash, commit_result, _run_id, pr_url, pr_result = await _execute(
+        tmp_path,
+        project,
+        config_enabled=False,
+        task_enabled=True,
+        script=(
+            "from pathlib import Path; "
+            "Path('generated.txt').write_text('generated\\n', encoding='utf-8')"
+        ),
+        draft_config_enabled=True,
+        draft_task_enabled=True,
+        draft_pr_publisher=publisher,
+    )
+
+    assert status is TaskStatus.SUCCEEDED
+    assert commit_hash is None
+    assert commit_result is None
+    assert pr_url is None
+    assert pr_result == "skipped: automatic commit was not created"
+    assert publisher.calls == []
+
+
+@pytest.mark.parametrize(
+    "draft_result",
+    [
+        DraftPrResult("https://github.example/owner/repo/pull/7", "created draft PR"),
+        DraftPrResult(None, "skipped: Git remote 'origin' is unavailable"),
+        DraftPrResult(None, "skipped: GitHub CLI (gh) is unavailable"),
+        DraftPrResult(None, "failed: draft PR creation: denied"),
+    ],
+)
+async def test_draft_pr_result_is_recorded_without_changing_successful_status(
+    tmp_path: Path,
+    draft_result: DraftPrResult,
+) -> None:
     project = tmp_path / "project"
     _init_repository(project)
     worktrees_root = tmp_path / "worktrees"
@@ -166,6 +260,7 @@ async def test_auto_commit_uses_the_prepared_worktree_as_git_cwd(tmp_path: Path)
     config.app.logs_dir = tmp_path / "logs"
     config.app.worktrees_dir = worktrees_root
     config.scheduler.auto_commit_enabled = True
+    config.scheduler.draft_pr_enabled = True
     engine = create_db_engine(tmp_path / "queue.db")
     init_db(engine)
     with make_session_factory(engine)() as session:
@@ -178,6 +273,7 @@ async def test_auto_commit_uses_the_prepared_worktree_as_git_cwd(tmp_path: Path)
                 project_path=str(project),
                 agent_policy=AgentName.CLAUDE.value,
                 auto_commit=True,
+                draft_pr=True,
                 use_worktree=True,
                 worktree_path=str(worktree),
                 worktree_branch="aqr/T1",
@@ -195,7 +291,12 @@ async def test_auto_commit_uses_the_prepared_worktree_as_git_cwd(tmp_path: Path)
             ],
         )
 
-        run = await ExecutionService(config, ProcessRunner()).execute(
+        publisher = FakeDraftPrPublisher(draft_result)
+        run = await ExecutionService(
+            config,
+            ProcessRunner(),
+            draft_pr_publisher=publisher,
+        ).execute(
             session,
             reserved,
             adapter,
@@ -204,6 +305,10 @@ async def test_auto_commit_uses_the_prepared_worktree_as_git_cwd(tmp_path: Path)
         assert reserved.status is TaskStatus.SUCCEEDED
         assert run.auto_commit_result == "committed"
         assert run.auto_commit_hash == _git(worktree, "rev-parse", "HEAD").stdout.strip()
+        assert run.draft_pr_url == draft_result.url
+        assert run.draft_pr_result == draft_result.detail
+        assert publisher.calls[0]["branch"] == "aqr/T1"
+        assert publisher.calls[0]["commit_hash"] == run.auto_commit_hash
         assert _git(project, "rev-list", "--count", "HEAD").stdout.strip() == "1"
         assert _git(worktree, "rev-list", "--count", "HEAD").stdout.strip() == "2"
     engine.dispose()
@@ -213,7 +318,7 @@ async def test_auto_commit_skips_when_run_makes_no_changes(tmp_path: Path) -> No
     project = tmp_path / "project"
     _init_repository(project)
 
-    status, commit_hash, result, _run_id = await _execute(
+    status, commit_hash, result, _run_id, *_draft = await _execute(
         tmp_path,
         project,
         config_enabled=True,
@@ -230,7 +335,7 @@ async def test_auto_commit_skips_non_repository(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
 
-    status, commit_hash, result, _run_id = await _execute(
+    status, commit_hash, result, _run_id, *_draft = await _execute(
         tmp_path,
         project,
         config_enabled=True,
@@ -253,7 +358,7 @@ async def test_auto_commit_refuses_repository_dirty_before_execution(
     _init_repository(project)
     (project / "existing.txt").write_text("older work\n", encoding="utf-8")
 
-    status, commit_hash, result, _run_id = await _execute(
+    status, commit_hash, result, _run_id, *_draft = await _execute(
         tmp_path,
         project,
         config_enabled=True,
@@ -278,7 +383,7 @@ async def test_commit_failure_does_not_change_successful_task_status(
     hook = project / ".git" / "hooks" / "pre-commit"
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
 
-    status, commit_hash, result, _run_id = await _execute(
+    status, commit_hash, result, _run_id, *_draft = await _execute(
         tmp_path,
         project,
         config_enabled=True,

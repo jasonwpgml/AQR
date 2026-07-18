@@ -56,6 +56,8 @@ class SchedulerSection(StrictModel):
     worktree_git_timeout_seconds: int = Field(default=30, ge=1)
     auto_commit_enabled: bool = False
     auto_commit_git_timeout_seconds: int = Field(default=30, ge=1)
+    draft_pr_enabled: bool = False
+    draft_pr_command_timeout_seconds: int = Field(default=30, ge=1)
 
 
 class AgentSection(StrictModel):

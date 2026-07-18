@@ -13,6 +13,7 @@ from ai_queue_runner.infrastructure.database import (
     _migrate_v7_to_v8,
     _migrate_v8_to_v9,
     _migrate_v9_to_v10,
+    _migrate_v10_to_v11,
     create_db_engine,
     init_db,
     make_session_factory,
@@ -439,6 +440,50 @@ class TestPersistence:
             ).scalar_one() == "unknown"
         engine.dispose()
 
+    def test_schema_v10_draft_pr_migration_is_retry_safe(self, tmp_path):
+        db_path = tmp_path / "v10.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+            connection.exec_driver_sql("INSERT INTO tasks (id) VALUES (1)")
+            connection.exec_driver_sql(
+                "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE task_templates (name TEXT NOT NULL PRIMARY KEY)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '10')"
+            )
+
+        factory = make_session_factory(engine)
+        with factory() as session:
+            _migrate_v10_to_v11(session)
+            _migrate_v10_to_v11(session)
+            session.commit()
+
+        init_db(engine)
+        task_columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+        run_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_runs")
+        }
+        template_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_templates")
+        }
+        assert "draft_pr" in task_columns
+        assert {"draft_pr_url", "draft_pr_result"} <= run_columns
+        assert "draft_pr" in template_columns
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT draft_pr FROM tasks WHERE id = 1"
+            ).scalar_one() == 0
+        with factory() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
+
     def test_legacy_database_without_version_is_inferred_and_migrated(self, tmp_path):
         db_path = tmp_path / "legacy.db"
         engine = create_db_engine(db_path)
@@ -452,7 +497,7 @@ class TestPersistence:
         init_db(engine)
 
         columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
-        assert {"fallback_agent", "auto_commit", "created_by"} <= columns
+        assert {"fallback_agent", "auto_commit", "created_by", "draft_pr"} <= columns
         with make_session_factory(engine)() as session:
             assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
         engine.dispose()

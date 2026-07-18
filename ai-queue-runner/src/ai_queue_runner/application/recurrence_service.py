@@ -43,6 +43,7 @@ def enqueue_next_occurrence(
         estimated_tokens=completed_task.estimated_tokens,
         approval_mode=completed_task.approval_mode,
         auto_commit=completed_task.auto_commit,
+        draft_pr=completed_task.draft_pr,
         max_retries=completed_task.max_retries,
         retry_delay_minutes=completed_task.retry_delay_minutes,
         recurrence_interval_days=completed_task.recurrence_interval_days,

@@ -30,6 +30,7 @@ from ai_queue_runner.infrastructure.adapters.base import (
 from ai_queue_runner.infrastructure.adapters.base import (
     summarize_output as default_summarize_output,
 )
+from ai_queue_runner.infrastructure.draft_pr import DraftPrPublisher, DraftPrResult
 from ai_queue_runner.infrastructure.git_auto_commit import (
     AutoCommitPreflight,
     AutoCommitResult,
@@ -59,11 +60,15 @@ class ExecutionService:
         config: AppConfig,
         process_runner: ProcessRunner,
         auto_committer: GitAutoCommitter | None = None,
+        draft_pr_publisher: DraftPrPublisher | None = None,
     ) -> None:
         self._config = config
         self._process_runner = process_runner
         self._auto_committer = auto_committer or GitAutoCommitter(
             timeout_seconds=config.scheduler.auto_commit_git_timeout_seconds
+        )
+        self._draft_pr_publisher = draft_pr_publisher or DraftPrPublisher(
+            timeout_seconds=config.scheduler.draft_pr_command_timeout_seconds
         )
 
     async def execute(
@@ -192,14 +197,19 @@ class ExecutionService:
             stderr_path,
         )
         session.commit()
-        if task.status is TaskStatus.SUCCEEDED and auto_commit_preflight is not None:
-            self._record_auto_commit(
-                task,
-                run,
-                adapter,
-                execution_path,
-                auto_commit_preflight,
-            )
+        draft_pr_requested = self._config.scheduler.draft_pr_enabled and task.draft_pr
+        if task.status is TaskStatus.SUCCEEDED and (
+            auto_commit_preflight is not None or draft_pr_requested
+        ):
+            if auto_commit_preflight is not None:
+                self._record_auto_commit(
+                    task,
+                    run,
+                    adapter,
+                    execution_path,
+                    auto_commit_preflight,
+                )
+            self._record_draft_pr(task, run, adapter, execution_path)
             session.commit()
         return run
 
@@ -243,6 +253,47 @@ class ExecutionService:
             task.id,
             result.detail,
             f" ({result.commit_hash})" if result.commit_hash else "",
+        )
+
+    def _record_draft_pr(
+        self,
+        task: Task,
+        run: TaskRun,
+        adapter: AgentAdapter,
+        execution_path: Path,
+    ) -> None:
+        if not (self._config.scheduler.draft_pr_enabled and task.draft_pr):
+            return
+        if run.auto_commit_hash is None:
+            run.draft_pr_result = (
+                "skipped: automatic commit was not created"
+                + (f" ({run.auto_commit_result})" if run.auto_commit_result else "")
+            )
+            return
+        try:
+            result = self._draft_pr_publisher.publish(
+                execution_path,
+                branch=run.worktree_branch,
+                title=task.title,
+                task_id=task.id,
+                run_id=run.id,
+                agent=adapter.name.value,
+                commit_hash=run.auto_commit_hash,
+            )
+        except Exception as exc:
+            detail = " ".join(f"{type(exc).__name__}: {exc}".split())[:500]
+            result = DraftPrResult(
+                None,
+                f"failed: {detail or 'unexpected draft PR error'}",
+            )
+            logger.exception("task %s draft PR publishing crashed", task.id)
+        run.draft_pr_url = result.url
+        run.draft_pr_result = result.detail
+        logger.info(
+            "task %s draft PR result: %s%s",
+            task.id,
+            result.detail,
+            f" ({result.url})" if result.url else "",
         )
 
     @staticmethod

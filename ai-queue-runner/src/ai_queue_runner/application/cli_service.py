@@ -84,6 +84,7 @@ def _dispatch(
                 estimated_tokens=args.estimated_tokens,
                 approval_mode=args.approval,
                 auto_commit=args.auto_commit,
+                draft_pr=args.draft_pr,
                 max_retries=args.max_retries,
                 recurrence_interval_days=_parse_recurrence_interval(args.repeat),
                 not_before=_parse_local_datetime(args.not_before),
@@ -109,6 +110,7 @@ def _dispatch(
                 estimated_tokens=args.estimated_tokens,
                 approval_mode=args.approval,
                 auto_commit=args.auto_commit,
+                draft_pr=args.draft_pr,
                 max_retries=args.max_retries,
                 retry_delay_minutes=args.retry_delay,
                 recurrence_interval_days=_parse_recurrence_interval(args.repeat),
@@ -167,6 +169,7 @@ def _dispatch(
             estimated_tokens=args.estimated_tokens,
             approval_mode=args.approval,
             auto_commit=args.auto_commit,
+            draft_pr=args.draft_pr,
             max_retries=args.max_retries,
             retry_delay_minutes=args.retry_delay,
             recurrence_interval_days=(
@@ -447,6 +450,7 @@ def _merged_draft(args: argparse.Namespace, service: TaskService) -> TaskDraft:
         auto_commit=(
             current.auto_commit if args.auto_commit is None else args.auto_commit
         ),
+        draft_pr=current.draft_pr if args.draft_pr is None else args.draft_pr,
         max_retries=current.max_retries if args.max_retries is None else args.max_retries,
         retry_delay_minutes=(
             current.retry_delay_minutes if args.retry_delay is None else args.retry_delay
@@ -478,6 +482,7 @@ def _queue_status(
         "global_auto_run": config.app.global_auto_run,
         "worktree_parallel_enabled": config.scheduler.worktree_parallel_enabled,
         "auto_commit_enabled": config.scheduler.auto_commit_enabled,
+        "draft_pr_enabled": config.scheduler.draft_pr_enabled,
         "worktrees_dir": str(config.app.worktrees_dir),
         "allowed_project_roots": [str(root) for root in config.app.allowed_project_roots],
         "task_counts": dict(sorted(counts.items())),
@@ -491,6 +496,7 @@ def _queue_status(
         f"{str(config.scheduler.worktree_parallel_enabled).lower()}",
         f"worktrees_dir: {config.app.worktrees_dir}",
         f"auto_commit_enabled: {str(config.scheduler.auto_commit_enabled).lower()}",
+        f"draft_pr_enabled: {str(config.scheduler.draft_pr_enabled).lower()}",
         "allowed_project_roots: "
         + (", ".join(payload["allowed_project_roots"]) or "(비어 있음 — 실행 차단됨)"),
         "task_counts: "
@@ -658,6 +664,7 @@ def _template_record(template: object) -> dict[str, Any]:
         "estimated_tokens": template.estimated_tokens,
         "approval_mode": _enum_value(template.approval_mode),
         "auto_commit": bool(template.auto_commit),
+        "draft_pr": bool(template.draft_pr),
         "max_retries": template.max_retries,
         "retry_delay_minutes": template.retry_delay_minutes,
         "recurrence_interval_days": template.recurrence_interval_days,
@@ -681,6 +688,7 @@ def _draft_record(draft: TaskDraft) -> dict[str, Any]:
         "estimated_tokens": draft.estimated_tokens,
         "approval_mode": draft.approval_mode.value,
         "auto_commit": bool(draft.auto_commit),
+        "draft_pr": bool(draft.draft_pr),
         "max_retries": draft.max_retries,
         "retry_delay_minutes": draft.retry_delay_minutes,
         "recurrence_interval_days": draft.recurrence_interval_days,
@@ -772,6 +780,7 @@ def _task_record(task: object) -> dict[str, Any]:
         "status": _enum_value(task.status),
         "approval_mode": _enum_value(task.approval_mode),
         "auto_commit": bool(task.auto_commit),
+        "draft_pr": bool(task.draft_pr),
         "max_retries": int(task.max_retries),
         "retry_count": int(task.retry_count),
         "retry_delay_minutes": int(task.retry_delay_minutes),
@@ -825,6 +834,8 @@ def _run_record(run: object) -> dict[str, Any]:
         "worktree_branch": run.worktree_branch,
         "auto_commit_hash": run.auto_commit_hash,
         "auto_commit_result": run.auto_commit_result,
+        "draft_pr_url": run.draft_pr_url,
+        "draft_pr_result": run.draft_pr_result,
     }
 
 
@@ -963,6 +974,12 @@ def _task_details(record: dict[str, Any]) -> str:
                 "auto_commit="
                 f"{run['auto_commit_hash'] or run['auto_commit_result']} "
                 if run["auto_commit_hash"] or run["auto_commit_result"]
+                else ""
+            )
+            + (
+                "draft_pr="
+                f"{run['draft_pr_url'] or run['draft_pr_result']} "
+                if run["draft_pr_url"] or run["draft_pr_result"]
                 else ""
             )
             + f"result_summary={_text_value(run['result_summary'])}"

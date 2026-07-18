@@ -65,6 +65,7 @@ def make_task(task_id: int = 1, **overrides):
         "status": TaskStatus.WAITING,
         "approval_mode": ApprovalMode.CONFIRM,
         "auto_commit": False,
+        "draft_pr": False,
         "max_retries": 2,
         "retry_count": 0,
         "retry_delay_minutes": 10,
@@ -135,6 +136,7 @@ def test_task_dialog_validates_and_builds_draft_with_dependencies(app, tmp_path)
     dialog.prompt_edit.setPlainText("작업 목록을 연결한다.")
     dialog.estimated_tokens_spin.setValue(12_000)
     dialog.auto_commit_check.setChecked(True)
+    dialog.draft_pr_check.setChecked(True)
     dialog.dependencies_list.item(0).setCheckState(Qt.CheckState.Checked)
     draft = dialog.build_draft()
 
@@ -144,6 +146,7 @@ def test_task_dialog_validates_and_builds_draft_with_dependencies(app, tmp_path)
     assert draft.approval_mode is ApprovalMode.CONFIRM
     assert draft.estimated_tokens == 12_000
     assert draft.auto_commit is True
+    assert draft.draft_pr is True
     assert draft.dependency_ids == [2]
 
 
@@ -777,8 +780,8 @@ def test_main_window_details_show_fallback_history(app):
     window.close()
 
 
-def test_main_window_details_show_auto_commit_history(app):
-    task = make_task(auto_commit=True)
+def test_main_window_details_show_git_publication_history(app):
+    task = make_task(auto_commit=True, draft_pr=True)
     service = FakeTaskService([task])
     service.list_runs = lambda _task_id: [
         SimpleNamespace(
@@ -789,6 +792,8 @@ def test_main_window_details_show_auto_commit_history(app):
             fallback_to_agent=None,
             auto_commit_hash="abc123",
             auto_commit_result="committed",
+            draft_pr_url="https://github.example/owner/repo/pull/7",
+            draft_pr_result="created draft PR",
             stdout_path=None,
             stderr_path=None,
         )
@@ -811,6 +816,9 @@ def test_main_window_details_show_auto_commit_history(app):
     assert "자동 커밋 요청: 예" in details
     assert "자동 커밋 이력:" in details
     assert "abc123" in details
+    assert "Draft PR 요청: 예" in details
+    assert "Draft PR 이력:" in details
+    assert "pull/7" in details
     window.close()
 
 

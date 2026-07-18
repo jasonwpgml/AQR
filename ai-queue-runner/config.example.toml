@@ -56,6 +56,11 @@ worktree_git_timeout_seconds = 30
 auto_commit_enabled = false
 auto_commit_git_timeout_seconds = 30
 
+# Push and open a GitHub draft PR only when this switch and the task's draft_pr
+# flag are true and that run created a commit on its managed aqr/T<ID> worktree.
+draft_pr_enabled = false
+draft_pr_command_timeout_seconds = 30
+
 # Per-agent settings. limit_patterns are substrings searched in CLI output to
 # classify usage-limit errors; adjust them to match your installed CLI versions.
 [agents.claude]

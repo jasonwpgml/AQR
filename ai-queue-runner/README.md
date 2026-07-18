@@ -48,6 +48,11 @@ allowed_project_roots = ["C:/Users/me/projects"]
 `--auto-commit`을 모두 켭니다. 실행 전부터 dirty인 저장소는 이전 변경을 섞지 않도록
 커밋을 생략하며, Git 실패가 작업의 `succeeded` 상태를 되돌리지는 않습니다.
 
+자동 커밋된 관리형 worktree 브랜치를 draft PR로 올리려면 추가로 `[scheduler]
+draft_pr_enabled = true`와 작업별 `--draft-pr`을 켭니다. `gh` 설치·인증과 `origin` 원격이
+필요하며, 임의의 현재 브랜치를 push하지 않도록 실제 `aqr/T<ID>` worktree 실행에서만
+동작합니다. 생략·실패도 작업 성공 상태를 바꾸지 않고 실행 이력에 사유를 남깁니다.
+
 ## 사용 흐름
 
 1. Claude/Codex 상태 패널에서 사용 가능 여부나 재사용 가능 시각을 설정합니다.
@@ -69,7 +74,7 @@ GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전�
   --actor codex --actor-session "codex-session-42" add-task `
   --title "회귀 테스트 추가" --prompt "변경된 예약 흐름의 회귀 테스트를 추가하세요." `
   --project "C:\projects\sample" --agent codex --priority 80 --approval confirm `
-  --auto-commit
+  --auto-commit --draft-pr
 
 # 선택한 날짜의 오전 9시(로컬 시간) 이후 실행하도록 예약
 ..\.venv\Scripts\python -m ai_queue_runner --config config.toml add-task `
