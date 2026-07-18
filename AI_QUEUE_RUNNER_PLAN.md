@@ -1407,7 +1407,6 @@ Claude는 매 작업 후 아래를 확인한다.
 - OpenAI API / Anthropic API 비용 기반 라우팅
 - 원격 서버 실행
 - 웹 대시보드
-- 결과 품질 평가
 - 작업 템플릿
 - 작업 완료 후 자동 commit
 - 사용자가 승인한 경우 draft PR 생성

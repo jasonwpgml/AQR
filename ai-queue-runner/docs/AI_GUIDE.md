@@ -35,7 +35,9 @@
 |---|---|---|
 | `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
 | `list-tasks` | 목록 조회 | `--status {waiting,reserved,running,succeeded,failed,retry_wait,blocked,cancelled,archived}` |
-| `show-task ID` | 상세 + 최근 5회 실행 | 반복 체인과 `split_parent_task_id`, `split_child_ids` 분할 관계 확인 |
+| `show-task ID` | 상세 + 최근 5회 실행 | 반복·분할·재작업 관계와 최신 평가(`review_status`, `review_score`, `review_count`) 확인 |
+| `pending-reviews` | 성공했지만 미평가인 작업 조회 | `--project PATH`로 프로젝트 한정, 완료 시각 순 |
+| `review-task ID` | 성공 작업 품질 평가 기록 | `--verdict {pass,fail}` 필수, `--score 1-5`, `--notes`, fail 전용 `--reopen PROMPT` |
 | `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run` |
 | `daily-summary` | 로컬 날짜의 프로젝트별 종료 활동 요약 | `--date YYYY-MM-DD`(생략 시 오늘), 완료·실패·차단·취소·실행·fallback·worktree·사용량 제한 |
 | `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
@@ -49,6 +51,37 @@
 | `archive-task ID` | 성공(succeeded) 작업 보관 | |
 | `delete-task ID` | 작업+실행 기록 영구 삭제 | reserved/running은 불가, 의존 작업 있으면 불가 |
 | `set-agent AGENT STATE` | 에이전트 수동 상태 설정 | `claude|codex` × `available|cooldown|disabled`, cooldown은 `--until "YYYY-MM-DD HH:MM"` |
+
+## 완료 결과 배치 검토
+
+AQR은 LLM을 호출하거나 자동 채점하지 않습니다. 큐를 조작하는 AI 또는 사용자가 결과를
+판단한 뒤, AQR은 평가와 후속 작업 관계만 저장합니다. 여러 작업을 연속 실행한 다음 아래
+흐름으로 한꺼번에 검토합니다.
+
+```powershell
+# 1. 전체 또는 프로젝트별 미평가 성공 작업을 완료 시각 순으로 조회
+... pending-reviews --json
+... pending-reviews --project "C:\projects\sample" --json
+
+# 2. 실행 로그·결과를 확인하고 평가
+... show-task 42 --json
+... review-task 42 --verdict pass --score 5 --notes "검증 완료" --json
+
+# 3. 실패 평가와 후속 프롬프트를 한 트랜잭션으로 등록
+... review-task 43 --verdict fail --score 2 --notes "회귀 테스트 누락" `
+    --reopen "누락된 회귀 테스트를 추가하고 전체 테스트를 다시 실행하세요." --json
+```
+
+평가는 `succeeded` 작업에만 기록할 수 있습니다. 재평가는 기존 행을 수정하지 않고 새
+이력 행을 추가하며, 가장 최근 행이 `list-tasks`/`show-task`의 현재 평가가 됩니다.
+`review_count`와 `review-task` 결과의 `revision`, `previous_review_count`로 재평가 여부를
+확인할 수 있습니다. 첫 평가가 생기면 해당 작업은 `pending-reviews`에서 제외됩니다.
+
+`--reopen`은 `fail`과만 사용할 수 있습니다. 생성되는 waiting 작업은 원본의 프로젝트,
+AI 정책, 우선순위, 토큰 추정, 승인·재시도 설정, 태그를 승계하고 옵션 문자열을 새
+프롬프트로 사용합니다. 제목은 `Rework: <원본 제목>`이며 `rework_of_task_id`로 원본과
+연결됩니다. 평가 저장과 후속 작업 등록은 같은 커밋이므로 어느 한쪽이 실패하면 둘 다
+남지 않습니다.
 
 ## 프로젝트별 일일 작업 요약
 

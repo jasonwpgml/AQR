@@ -36,6 +36,7 @@ from ai_queue_runner.domain.enums import (
     AgentStatus,
     ApprovalMode,
     ErrorType,
+    ReviewVerdict,
     TaskStatus,
 )
 
@@ -105,6 +106,9 @@ class Task(Base):
     split_parent_task_id: Mapped[int | None] = mapped_column(
         ForeignKey("tasks.id", ondelete="RESTRICT"), index=True, default=None
     )
+    rework_of_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="RESTRICT"), index=True, default=None
+    )
     not_before: Mapped[datetime | None] = mapped_column(default=None)
     reserved_at: Mapped[datetime | None] = mapped_column(default=None)
     started_at: Mapped[datetime | None] = mapped_column(default=None)
@@ -135,7 +139,24 @@ class Task(Base):
         back_populates="split_parent",
         order_by="Task.id",
     )
+    rework_of: Mapped[Task | None] = relationship(
+        "Task",
+        foreign_keys=[rework_of_task_id],
+        remote_side=[id],
+        back_populates="rework_tasks",
+    )
+    rework_tasks: Mapped[list[Task]] = relationship(
+        "Task",
+        foreign_keys=[rework_of_task_id],
+        back_populates="rework_of",
+        order_by="Task.id",
+    )
     runs: Mapped[list[TaskRun]] = relationship(back_populates="task")
+    reviews: Mapped[list[TaskReview]] = relationship(
+        back_populates="task",
+        order_by="TaskReview.id",
+        cascade="all, delete-orphan",
+    )
 
     @validates("agent_policy")
     def _coerce_policy(self, _key: str, value: object) -> AgentPolicy:
@@ -194,6 +215,27 @@ class TaskRun(Base):
     worktree_branch: Mapped[str | None] = mapped_column(Text, default=None)
 
     task: Mapped[Task] = relationship(back_populates="runs")
+
+
+class TaskReview(Base):
+    __tablename__ = "task_reviews"
+    __table_args__ = (
+        CheckConstraint(
+            "score IS NULL OR score BETWEEN 1 AND 5",
+            name="ck_task_reviews_score_range",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), index=True
+    )
+    verdict: Mapped[ReviewVerdict] = mapped_column(_enum(ReviewVerdict))
+    score: Mapped[int | None] = mapped_column(Integer, default=None)
+    notes: Mapped[str | None] = mapped_column(Text, default=None)
+    reviewed_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+    task: Mapped[Task] = relationship(back_populates="reviews")
 
 
 class Setting(Base):

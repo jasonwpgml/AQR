@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import case, select, update
+from sqlalchemy import case, exists, select, update
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentName, TaskStatus
-from ai_queue_runner.domain.models import AgentState, Setting, Task, TaskRun
+from ai_queue_runner.domain.models import AgentState, Setting, Task, TaskReview, TaskRun
 from ai_queue_runner.domain.transitions import validate_transition
 
 
@@ -36,9 +36,22 @@ class TaskRepository:
         )
 
     def list(self, *, status: TaskStatus | None = None) -> list[Task]:
-        stmt = select(Task).order_by(Task.id)
+        stmt = select(Task).options(selectinload(Task.reviews)).order_by(Task.id)
         if status is not None:
             stmt = stmt.where(Task.status == status)
+        return list(self._session.scalars(stmt))
+
+    def list_pending_reviews(self, *, project_path: str | None = None) -> list[Task]:
+        stmt = (
+            select(Task)
+            .where(
+                Task.status == TaskStatus.SUCCEEDED,
+                ~exists().where(TaskReview.task_id == Task.id),
+            )
+            .order_by(Task.finished_at, Task.id)
+        )
+        if project_path is not None:
+            stmt = stmt.where(Task.project_path == project_path)
         return list(self._session.scalars(stmt))
 
     def list_terminal_activity_between(
@@ -154,6 +167,23 @@ class TaskRunRepository:
         )
         return list(self._session.scalars(stmt))
 
+
+class TaskReviewRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, review: TaskReview) -> TaskReview:
+        self._session.add(review)
+        self._session.flush()
+        return review
+
+    def list_for_task(self, task_id: int) -> list[TaskReview]:
+        stmt = (
+            select(TaskReview)
+            .where(TaskReview.task_id == task_id)
+            .order_by(TaskReview.id)
+        )
+        return list(self._session.scalars(stmt))
 
 class SettingsRepository:
     def __init__(self, session: Session) -> None:

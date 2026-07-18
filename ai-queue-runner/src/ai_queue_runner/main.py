@@ -118,6 +118,26 @@ def main(argv: list[str] | None = None) -> int:
     show_task.add_argument("task_id", type=int, metavar="ID")
     _add_subcommand_json_option(show_task)
 
+    review_task = subcommands.add_parser(
+        "review-task", help="record a quality review for a succeeded task"
+    )
+    review_task.add_argument("task_id", type=int, metavar="ID")
+    review_task.add_argument("--verdict", choices=("pass", "fail"), required=True)
+    review_task.add_argument("--score", type=int, metavar="1-5")
+    review_task.add_argument("--notes", metavar="TEXT")
+    review_task.add_argument(
+        "--reopen",
+        metavar="PROMPT",
+        help="with verdict fail, atomically enqueue a linked rework task",
+    )
+    _add_subcommand_json_option(review_task)
+
+    pending_reviews = subcommands.add_parser(
+        "pending-reviews", help="list succeeded tasks without a quality review"
+    )
+    pending_reviews.add_argument("--project", type=Path, help="absolute project path")
+    _add_subcommand_json_option(pending_reviews)
+
     cancel_task = subcommands.add_parser("cancel-task", help="cancel a queued task")
     cancel_task.add_argument("task_id", type=int, metavar="ID")
     _add_subcommand_json_option(cancel_task)

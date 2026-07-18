@@ -12,7 +12,13 @@ from ai_queue_runner.application.scheduler_service import reserve_next_task
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
-from ai_queue_runner.domain.enums import AgentName, AgentStatus, ErrorType, TaskStatus
+from ai_queue_runner.domain.enums import (
+    AgentName,
+    AgentStatus,
+    ErrorType,
+    ReviewVerdict,
+    TaskStatus,
+)
 from ai_queue_runner.domain.models import TaskRun
 from ai_queue_runner.infrastructure.database import (
     create_db_engine,
@@ -23,6 +29,7 @@ from ai_queue_runner.infrastructure.path_policy import PathPolicyError
 from ai_queue_runner.infrastructure.repositories import (
     AgentStateRepository,
     TaskRepository,
+    TaskReviewRepository,
     TaskRunRepository,
 )
 
@@ -289,6 +296,158 @@ def test_split_task_rejects_running_original(application) -> None:
         tasks.split_task(original.id, [draft(project, title="child")])
 
     assert tasks.get(original.id).status is TaskStatus.RUNNING
+
+
+def test_review_rejects_non_succeeded_task_and_preserves_rereview_history(
+    application,
+) -> None:
+    tasks, _agents, factory, project = application
+    created = tasks.create(draft(project, title="review target"))
+
+    with pytest.raises(ValueError, match="only succeeded"):
+        tasks.review_task(created.id, verdict="pass")
+
+    with factory() as session:
+        repo = TaskRepository(session)
+        stored = repo.get(created.id)
+        repo.set_status(stored, TaskStatus.RESERVED)
+        repo.set_status(stored, TaskStatus.RUNNING)
+        repo.set_status(stored, TaskStatus.SUCCEEDED)
+        stored.finished_at = utcnow()
+        session.commit()
+
+    first = tasks.review_task(
+        created.id,
+        verdict=ReviewVerdict.FAIL,
+        score=2,
+        notes="missing coverage",
+    )
+    second = tasks.review_task(created.id, verdict="pass", score=5)
+
+    assert first.previous_review_count == 0
+    assert first.review.revision == 1
+    assert second.previous_review_count == 1
+    assert second.review.revision == 2
+    current = tasks.get(created.id)
+    assert current.review_verdict is ReviewVerdict.PASS
+    assert current.review_score == 5
+    assert current.review_count == 2
+    with factory() as session:
+        history = TaskReviewRepository(session).list_for_task(created.id)
+        assert [review.verdict for review in history] == [
+            ReviewVerdict.FAIL,
+            ReviewVerdict.PASS,
+        ]
+
+
+def test_pending_reviews_filters_by_project_and_excludes_reviewed_tasks(
+    application,
+) -> None:
+    tasks, _agents, factory, project_a = application
+    project_b = project_a.parent / "project-b"
+    project_b.mkdir()
+    first = tasks.create(draft(project_a, title="first"))
+    second = tasks.create(draft(project_b, title="second"))
+    unfinished = tasks.create(draft(project_a, title="unfinished"))
+
+    with factory() as session:
+        repo = TaskRepository(session)
+        for task_id in (first.id, second.id):
+            stored = repo.get(task_id)
+            repo.set_status(stored, TaskStatus.RESERVED)
+            repo.set_status(stored, TaskStatus.RUNNING)
+            repo.set_status(stored, TaskStatus.SUCCEEDED)
+            stored.finished_at = utcnow()
+        session.commit()
+
+    assert [task.id for task in tasks.pending_reviews()] == [first.id, second.id]
+    assert [
+        task.id for task in tasks.pending_reviews(project_path=project_a)
+    ] == [first.id]
+    assert unfinished.id not in [task.id for task in tasks.pending_reviews()]
+
+    tasks.review_task(first.id, verdict="pass")
+
+    assert [task.id for task in tasks.pending_reviews()] == [second.id]
+
+
+def test_failed_review_atomically_enqueues_linked_rework_and_rolls_back_on_failure(
+    application,
+    monkeypatch,
+) -> None:
+    tasks, _agents, factory, project = application
+    source = tasks.create(
+        draft(
+            project,
+            title="source",
+            agent_policy="codex",
+            priority=77,
+            estimated_tokens=1200,
+            approval_mode="auto",
+            tags=["quality"],
+        )
+    )
+    rollback_source = tasks.create(draft(project, title="rollback source"))
+    with factory() as session:
+        repo = TaskRepository(session)
+        for task_id in (source.id, rollback_source.id):
+            stored = repo.get(task_id)
+            repo.set_status(stored, TaskStatus.RESERVED)
+            repo.set_status(stored, TaskStatus.RUNNING)
+            repo.set_status(stored, TaskStatus.SUCCEEDED)
+        session.commit()
+
+    result = tasks.review_task(
+        source.id,
+        verdict="fail",
+        score=1,
+        reopen_prompt="Fix the missing behavior and rerun tests.",
+    )
+
+    rework = result.rework_task
+    assert rework is not None
+    assert rework.rework_of_task_id == source.id
+    assert rework.prompt == "Fix the missing behavior and rerun tests."
+    assert rework.project_path == source.project_path
+    assert rework.agent_policy == source.agent_policy
+    assert rework.priority == source.priority
+    assert rework.estimated_tokens == source.estimated_tokens
+    assert tasks.get(source.id).rework_task_ids == (rework.id,)
+
+    def fail_add(_repo, _task):
+        raise RuntimeError("simulated rework insert failure")
+
+    monkeypatch.setattr(TaskRepository, "add", fail_add)
+    with pytest.raises(RuntimeError, match="rework insert failure"):
+        tasks.review_task(
+            rollback_source.id,
+            verdict="fail",
+            reopen_prompt="This must roll back.",
+        )
+    with factory() as session:
+        assert TaskReviewRepository(session).list_for_task(rollback_source.id) == []
+    assert tasks.get(rollback_source.id).review_count == 0
+
+
+def test_review_rejects_pass_with_reopen(application) -> None:
+    tasks, _agents, factory, project = application
+    created = tasks.create(draft(project))
+    with factory() as session:
+        repo = TaskRepository(session)
+        stored = repo.get(created.id)
+        repo.set_status(stored, TaskStatus.RESERVED)
+        repo.set_status(stored, TaskStatus.RUNNING)
+        repo.set_status(stored, TaskStatus.SUCCEEDED)
+        session.commit()
+
+    with pytest.raises(ValueError, match="only be used with verdict fail"):
+        tasks.review_task(
+            created.id,
+            verdict="pass",
+            reopen_prompt="should be rejected",
+        )
+
+    assert tasks.get(created.id).review_count == 0
 
 
 def test_activity_between_returns_tasks_with_events_inside_range(application) -> None:

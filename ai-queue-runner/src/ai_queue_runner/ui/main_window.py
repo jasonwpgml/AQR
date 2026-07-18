@@ -342,6 +342,12 @@ class MainWindow(QMainWindow):
             f"프로젝트: {getattr(task, 'project_path', '')}",
             f"재시도: {getattr(task, 'retry_count', 0)} / {getattr(task, 'max_retries', 0)}",
         ]
+        review_verdict = enum_value(getattr(task, "review_verdict", None))
+        review_score = getattr(task, "review_score", None)
+        review_text = review_verdict or "미평가"
+        if review_score is not None:
+            review_text += f" (점수 {review_score}/5)"
+        details.append(f"품질 평가: {review_text}")
         worktree_path = getattr(task, "worktree_path", None)
         worktree_branch = getattr(task, "worktree_branch", None)
         if worktree_path and worktree_branch:

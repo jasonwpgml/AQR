@@ -13,7 +13,7 @@ flowchart TB
     end
 
     subgraph APP["application/ · 유스케이스"]
-        TASK[TaskService\nCRUD·원자적 배치·작업 분할·일일 집계]
+        TASK[TaskService\nCRUD·원자적 배치·작업 분할·품질 평가·일일 집계]
         PLAN[WorkloadPlanning\n토큰 예산·결정적 분배]
         AGENT[AgentService]
         RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
@@ -87,6 +87,7 @@ erDiagram
         int recurrence_interval_days
         int recurrence_source_task_id FK,UK
         int split_parent_task_id FK
+        int rework_of_task_id FK
         datetime not_before
         datetime reserved_at
         datetime created_at
@@ -121,6 +122,14 @@ erDiagram
         text worktree_path
         text worktree_branch
     }
+    task_reviews {
+        int id PK
+        int task_id FK
+        text verdict
+        int score
+        text notes
+        datetime reviewed_at
+    }
     settings {
         text key PK
         json value_json
@@ -128,8 +137,10 @@ erDiagram
 
     tasks ||--o{ task_dependencies : "선행 작업"
     tasks ||--o{ task_runs : "실행 기록"
+    tasks ||--o{ task_reviews : "품질 평가 이력"
     tasks o|--o| tasks : "다음 반복 회차"
     tasks o|--o{ tasks : "분할 원본과 하위 작업"
+    tasks o|--o{ tasks : "평가 실패 원본과 재작업"
     tasks |o--o| agent_states : "현재 예약/실행"
 ```
 
@@ -146,6 +157,9 @@ worktree 경로·브랜치를 추가합니다. 작업 행은 현재/재시도 �
 스키마 v6는 `tasks.split_parent_task_id` 자기 참조 외래 키와 인덱스를 추가합니다. 하위
 작업은 원본 ID를 하나 보존하고 원본은 역관계로 모든 하위 ID를 조회합니다. 분할 시 기존
 `task_dependencies`만 사용해 형제 순서와 후속 작업의 전체 하위 작업 대기를 표현합니다.
+스키마 v7은 append-only `task_reviews` 평가 이력과 `tasks.rework_of_task_id` 자기 참조를
+추가합니다. 최신 평가 행이 현재 pass/fail·점수이며, 실패 평가와 연결된 재작업 생성은
+같은 트랜잭션에서 커밋됩니다. AQR 내부에는 LLM 호출이나 자동 채점이 없습니다.
 
 ## 3. 작업 상태 전이
 
@@ -249,6 +263,8 @@ flowchart TD
 - `split-task`는 원본의 현재 큐 상태를 CAS 취소해 스케줄러 예약과 경합하지 않습니다.
   하위 작업·형제 의존·분할 관계를 등록하고, 원본의 직접 후속 작업이 하위 작업 전체를
   기다리도록 재배선한 뒤 한 번만 커밋합니다. 실패하면 원본 취소까지 롤백합니다.
+- `pending-reviews`는 평가 이력이 없는 succeeded 작업만 조회합니다. `review-task --reopen`은
+  fail 평가 행과 원본 설정을 승계한 waiting 재작업을 한 트랜잭션으로 저장합니다.
 - `cleanup-worktree ID`는 종료 상태 작업만 받으며 dirty 파일이나 프로젝트 HEAD에 포함되지 않은 브랜치 커밋이 있으면 삭제를 거부합니다. 통과해도 worktree만 제거하고 브랜치와 실행 이력은 남깁니다.
 
 ## 6. 주요 파일

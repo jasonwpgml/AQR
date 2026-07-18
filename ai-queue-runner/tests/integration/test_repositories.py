@@ -7,6 +7,7 @@ from ai_queue_runner.domain.models import Task, TaskRun
 from ai_queue_runner.domain.transitions import InvalidTransitionError
 from ai_queue_runner.infrastructure.database import (
     SCHEMA_VERSION,
+    _migrate_v6_to_v7,
     create_db_engine,
     init_db,
     make_session_factory,
@@ -261,6 +262,42 @@ class TestPersistence:
                 "SELECT split_parent_task_id FROM tasks WHERE id = 1"
             ).scalar_one() is None
         with make_session_factory(engine)() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
+
+    def test_schema_v6_review_migration_is_retry_safe(self, tmp_path):
+        db_path = tmp_path / "v6.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+            connection.exec_driver_sql("INSERT INTO tasks (id) VALUES (1)")
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '6')"
+            )
+
+        factory = make_session_factory(engine)
+        with factory() as session:
+            _migrate_v6_to_v7(session)
+            _migrate_v6_to_v7(session)
+            session.commit()
+
+        init_db(engine)
+        task_columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+        task_indexes = {
+            index["name"]: index for index in inspect(engine).get_indexes("tasks")
+        }
+        review_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_reviews")
+        }
+        assert "rework_of_task_id" in task_columns
+        assert "ix_tasks_rework_of_task_id" in task_indexes
+        assert {"id", "task_id", "verdict", "score", "notes", "reviewed_at"} <= (
+            review_columns
+        )
+        with factory() as session:
             assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
         engine.dispose()
 

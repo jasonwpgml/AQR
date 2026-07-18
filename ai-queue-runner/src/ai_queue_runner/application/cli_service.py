@@ -91,6 +91,66 @@ def _dispatch(
             _run_record(run) for run in reversed(service.list_runs(task.id)[-5:])
         ]
         return _json_or_text(record, _task_details(record), args.json)
+    if args.command == "review-task":
+        result = service.review_task(
+            args.task_id,
+            verdict=args.verdict,
+            score=args.score,
+            notes=args.notes,
+            reopen_prompt=args.reopen,
+        )
+        payload = {
+            "task": _task_record(result.task),
+            "review": {
+                "id": result.review.id,
+                "task_id": result.review.task_id,
+                "verdict": result.review.verdict.value,
+                "score": result.review.score,
+                "notes": result.review.notes,
+                "reviewed_at": _utc_iso(result.review.reviewed_at),
+                "revision": result.review.revision,
+            },
+            "previous_review_count": result.previous_review_count,
+            "rework_task": (
+                None
+                if result.rework_task is None
+                else _task_record(result.rework_task)
+            ),
+        }
+        rework_text = (
+            ""
+            if result.rework_task is None
+            else f"; rework task #{result.rework_task.id} enqueued"
+        )
+        return _json_or_text(
+            payload,
+            f"Task #{args.task_id} review revision {result.review.revision}: "
+            f"{result.review.verdict.value}"
+            + (f" score={result.review.score}" if result.review.score else "")
+            + rework_text,
+            args.json,
+        )
+    if args.command == "pending-reviews":
+        records = [
+            {
+                "id": task.id,
+                "title": task.title,
+                "project_path": task.project_path,
+                "finished_at": _utc_iso(task.finished_at),
+            }
+            for task in service.pending_reviews(project_path=args.project)
+        ]
+        lines = ["ID  FINISHED_AT           PROJECT  TITLE"]
+        lines.extend(
+            f"{record['id']:<3} {(record['finished_at'] or '-'):<21} "
+            f"{record['project_path']}  {record['title']}"
+            for record in records
+        )
+        return _json_or_text(
+            records,
+            "평가 대기 작업이 없습니다." if not records else "\n".join(lines),
+            args.json,
+        )
     if args.command == "cancel-task":
         task = service.cancel(args.task_id)
         return _json_or_text(
@@ -489,6 +549,15 @@ def _task_record(task: object) -> dict[str, Any]:
         "dependency_ids": list(task.dependency_ids),
         "split_parent_task_id": task.split_parent_task_id,
         "split_child_ids": list(task.split_child_ids),
+        "rework_of_task_id": task.rework_of_task_id,
+        "rework_task_ids": list(task.rework_task_ids),
+        "review_status": (
+            "unreviewed" if task.review_verdict is None else task.review_verdict.value
+        ),
+        "review_score": task.review_score,
+        "review_notes": task.review_notes,
+        "reviewed_at": _utc_iso(task.reviewed_at),
+        "review_count": task.review_count,
         "archived": bool(task.archived),
         "use_worktree": bool(task.use_worktree),
         "worktree_path": task.worktree_path,
@@ -626,15 +695,24 @@ def _duration_text(seconds: float) -> str:
 def _task_table(records: list[dict[str, Any]]) -> str:
     if not records:
         return "작업이 없습니다."
-    rows = ["ID  STATUS       AGENT   PRIORITY  REPEAT        SPLIT             TITLE"]
+    rows = [
+        "ID  STATUS       AGENT   PRIORITY  REVIEW       REPEAT        SPLIT             TITLE"
+    ]
     rows.extend(
         f"{record['id']:<3} {record['status']:<12} "
         f"{(record['assigned_agent'] or record['agent_policy']):<7} "
-        f"{record['priority']:<8}  {(record['recurrence'] or '-'):<12}  "
+        f"{record['priority']:<8}  {_review_text(record):<11}  "
+        f"{(record['recurrence'] or '-'):<12}  "
         f"{_split_relation_text(record):<16}  {record['title']}"
         for record in records
     )
     return "\n".join(rows)
+
+
+def _review_text(record: dict[str, Any]) -> str:
+    status = record["review_status"]
+    score = record["review_score"]
+    return status if score is None else f"{status}({score})"
 
 
 def _split_relation_text(record: dict[str, Any]) -> str:

@@ -239,6 +239,95 @@ def test_cli_list_filter_show_and_json_include_stable_fields(tmp_path, capsys):
     assert "result_summary=테스트 통과" in text
 
 
+def test_cli_review_pending_and_reopen_workflow(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    project = allowed_root / "project"
+    project.mkdir()
+    assert main(
+        cli_args(
+            config_path,
+            "add-task",
+            "--title",
+            "quality target",
+            "--prompt",
+            "implement it",
+            "--project",
+            project,
+            "--agent",
+            "codex",
+            "--json",
+        )
+    ) == 0
+    task_id = json.loads(capsys.readouterr().out)["id"]
+
+    config = load_config(config_path)
+    engine = create_db_engine(config.app.db_path)
+    with make_session_factory(engine)() as session:
+        repo = TaskRepository(session)
+        task = repo.get(task_id)
+        repo.set_status(task, TaskStatus.RESERVED)
+        repo.set_status(task, TaskStatus.RUNNING)
+        repo.set_status(task, TaskStatus.SUCCEEDED)
+        task.finished_at = datetime(2030, 1, 2, 3, 4, 5)
+        session.commit()
+    engine.dispose()
+
+    assert main(
+        cli_args(config_path, "pending-reviews", "--project", project, "--json")
+    ) == 0
+    pending = json.loads(capsys.readouterr().out)
+    assert pending == [
+        {
+            "finished_at": "2030-01-02T03:04:05Z",
+            "id": task_id,
+            "project_path": str(project.resolve()),
+            "title": "quality target",
+        }
+    ]
+
+    assert main(
+        cli_args(
+            config_path,
+            "review-task",
+            task_id,
+            "--verdict",
+            "fail",
+            "--score",
+            2,
+            "--notes",
+            "missing test",
+            "--reopen",
+            "Add the missing test.",
+            "--json",
+        )
+    ) == 0
+    reviewed = json.loads(capsys.readouterr().out)
+    assert reviewed["review"]["revision"] == 1
+    assert reviewed["task"]["review_status"] == "fail"
+    assert reviewed["rework_task"]["rework_of_task_id"] == task_id
+
+    assert main(cli_args(config_path, "pending-reviews", "--json")) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert main(cli_args(config_path, "show-task", task_id, "--json")) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["review_status"] == "fail"
+    assert shown["review_score"] == 2
+    assert shown["review_count"] == 1
+
+    assert main(
+        cli_args(
+            config_path,
+            "review-task",
+            task_id,
+            "--verdict",
+            "pass",
+            "--reopen",
+            "invalid",
+        )
+    ) == 2
+    assert "--reopen" in capsys.readouterr().err
+
+
 def test_cli_cancel_refuses_succeeded_task_with_expected_exit(tmp_path, capsys):
     config_path, allowed_root = write_cli_config(tmp_path)
     project = allowed_root / "project"
