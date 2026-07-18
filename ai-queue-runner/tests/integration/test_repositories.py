@@ -8,6 +8,7 @@ from ai_queue_runner.domain.transitions import InvalidTransitionError
 from ai_queue_runner.infrastructure.database import (
     SCHEMA_VERSION,
     _migrate_v6_to_v7,
+    _migrate_v7_to_v8,
     create_db_engine,
     init_db,
     make_session_factory,
@@ -297,6 +298,49 @@ class TestPersistence:
         assert {"id", "task_id", "verdict", "score", "notes", "reviewed_at"} <= (
             review_columns
         )
+        with factory() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
+
+    def test_schema_v7_task_template_migration_is_retry_safe(self, tmp_path):
+        db_path = tmp_path / "v7.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '7')"
+            )
+
+        factory = make_session_factory(engine)
+        with factory() as session:
+            _migrate_v7_to_v8(session)
+            _migrate_v7_to_v8(session)
+            session.commit()
+
+        init_db(engine)
+        columns = {
+            column["name"] for column in inspect(engine).get_columns("task_templates")
+        }
+        assert {
+            "name",
+            "title",
+            "prompt",
+            "project_path",
+            "agent_policy",
+            "priority",
+            "estimated_tokens",
+            "approval_mode",
+            "max_retries",
+            "retry_delay_minutes",
+            "recurrence_interval_days",
+            "not_before",
+            "tags_json",
+            "dependency_ids_json",
+            "created_at",
+            "updated_at",
+        } <= columns
         with factory() as session:
             assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
         engine.dispose()

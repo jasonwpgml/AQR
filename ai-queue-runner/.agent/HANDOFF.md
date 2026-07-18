@@ -1,6 +1,6 @@
 FROM: codex
 TO: claude
-TASK: T034
+TASK: T035
 STATUS: completed
 
 CHANGED:
@@ -13,32 +13,31 @@ CHANGED:
 - docs/AI_GUIDE.md
 - docs/ARCHITECTURE.md
 - src/ai_queue_runner/application/cli_service.py
-- src/ai_queue_runner/application/task_service.py
-- src/ai_queue_runner/domain/enums.py
+- src/ai_queue_runner/application/task_template_service.py
 - src/ai_queue_runner/domain/models.py
 - src/ai_queue_runner/infrastructure/database.py
 - src/ai_queue_runner/infrastructure/repositories.py
 - src/ai_queue_runner/main.py
-- src/ai_queue_runner/ui/main_window.py
-- tests/integration/test_application_services.py
 - tests/integration/test_repositories.py
+- tests/integration/test_task_templates.py
 - tests/unit/test_main.py
 
 VERIFIED:
-- `..\.venv\Scripts\python -m pytest -q` -> 303 passed in 31.21s
+- `..\.venv\Scripts\python -m pytest -q` -> 308 passed in 49.03s
 - `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
-- targeted service/CLI/migration suite -> 68 passed in 9.23s
-- `..\.venv\Scripts\python -m ai_queue_runner --help` -> `review-task` and `pending-reviews` listed
+- targeted template/CLI/migration suite -> 48 passed in 10.17s
+- `..\.venv\Scripts\python -m ai_queue_runner --help` -> all five template commands listed
 - `git diff --check` -> no whitespace errors (Git emitted only LF/CRLF conversion warnings)
 
 NOTES:
-- Schema v7 adds append-only `task_reviews` (`task_id`, verdict, optional score/notes, reviewed_at) plus indexed `tasks.rework_of_task_id`. The highest review ID is the current evaluation; re-review appends a new row, and revision/review_count exposes prior evaluation history.
-- `pending-reviews` selects succeeded tasks with no review rows, ordered by completion time and ID, with optional canonical project-path filtering.
-- `review-task --verdict fail --reopen PROMPT` inserts the review and a linked waiting task in one caller-owned transaction. The rework task inherits project, agent policy, priority, estimated tokens, approval/retry settings, and user tags; it uses the supplied prompt and does not inherit recurrence.
-- `list-tasks`, `show-task`, and the desktop task detail expose unreviewed/pass/fail plus score. No evaluation input UI was added.
-- Daily-summary review counts were intentionally omitted: reviews commonly happen in a later batch, so mixing review time with the existing completion-date activity contract would be ambiguous and unnecessary for the pending-review workflow.
-- The completed `result quality evaluation` item was removed from plan section 20.
+- Schema v8 adds `task_templates`, keyed by case-sensitive name, with title, prompt, nullable project path, agent/priority/token/approval/retry/recurrence/scheduling defaults, tags/dependency JSON, and created/updated timestamps. The v7->v8 registry migration uses `CREATE TABLE IF NOT EXISTS` and is covered by a double-invocation retry test.
+- `save-template` upserts and reports `overwritten`; list/show/delete expose DB-backed CRUD. A project path can be deferred at save time but render/dry-run must produce a valid TaskDraft under the normal path/dependency policy.
+- Only title/prompt support simple `{identifier}` placeholders. Missing names are aggregated and sorted; formatting/conversion expressions are rejected; substituted or overridden results containing unresolved simple placeholders are rejected. Explicit TaskDraft-field flags override stored values, and overriding title/prompt removes that field's variable requirements.
+- `add-from-template --dry-run` renders and calls `TaskService.validate_batch()` without inserting a task. Actual creation still goes through `TaskService.create()`.
+- Batch-only `depends_on_indices` is intentionally excluded from the single-task template schema; existing-task `dependency_ids` is persisted and validated.
+- The completed work-template item was removed from plan section 20. No UI changes were made.
 
 RISKS:
-- Re-review history has no dedicated CLI history command; current status and revision count are exposed, while full rows remain queryable in `task_reviews`.
-- `.agent/TASK_T034.md` and `.agent/TASK_T035.md` are untracked user/task files and were left untouched.
+- Template names are intentionally case-sensitive because the SQLite TEXT primary key uses its default collation.
+- Stored recurrence/not-before/tags/dependencies can be overridden but not explicitly cleared through `add-from-template`; delete/re-save the template or use `update-task` after creation when a clear operation is needed.
+- Untracked `.agent/TASK_T035.md` and `.agent/TASK_T036.md` were user/task inputs and were left untouched.

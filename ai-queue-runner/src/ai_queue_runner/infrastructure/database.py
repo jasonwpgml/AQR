@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -161,6 +161,34 @@ def _migrate_v6_to_v7(session: Session) -> None:
     )
 
 
+def _migrate_v7_to_v8(session: Session) -> None:
+    session.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS task_templates ("
+            "name TEXT NOT NULL PRIMARY KEY, "
+            "title TEXT NOT NULL, "
+            "prompt TEXT NOT NULL, "
+            "project_path TEXT, "
+            "agent_policy VARCHAR(6) NOT NULL "
+            "CHECK (agent_policy IN ('claude', 'codex', 'any')), "
+            "priority INTEGER NOT NULL DEFAULT 50 CHECK (priority BETWEEN 0 AND 100), "
+            "estimated_tokens INTEGER NOT NULL DEFAULT 0 CHECK (estimated_tokens >= 0), "
+            "approval_mode VARCHAR(7) NOT NULL DEFAULT 'confirm' "
+            "CHECK (approval_mode IN ('auto', 'confirm')), "
+            "max_retries INTEGER NOT NULL DEFAULT 2 CHECK (max_retries >= 0), "
+            "retry_delay_minutes INTEGER NOT NULL DEFAULT 10 "
+            "CHECK (retry_delay_minutes >= 0), "
+            "recurrence_interval_days INTEGER "
+            "CHECK (recurrence_interval_days IS NULL OR recurrence_interval_days >= 1), "
+            "not_before DATETIME, "
+            "tags_json JSON NOT NULL, "
+            "dependency_ids_json JSON NOT NULL, "
+            "created_at DATETIME NOT NULL, "
+            "updated_at DATETIME NOT NULL)"
+        )
+    )
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -168,6 +196,7 @@ _MIGRATIONS = {
     4: _migrate_v4_to_v5,
     5: _migrate_v5_to_v6,
     6: _migrate_v6_to_v7,
+    7: _migrate_v7_to_v8,
 }
 
 

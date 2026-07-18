@@ -14,7 +14,14 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ai_queue_runner.domain.clock import utcnow
 from ai_queue_runner.domain.enums import AgentName, TaskStatus
-from ai_queue_runner.domain.models import AgentState, Setting, Task, TaskReview, TaskRun
+from ai_queue_runner.domain.models import (
+    AgentState,
+    Setting,
+    Task,
+    TaskReview,
+    TaskRun,
+    TaskTemplate,
+)
 from ai_queue_runner.domain.transitions import validate_transition
 
 
@@ -184,6 +191,28 @@ class TaskReviewRepository:
             .order_by(TaskReview.id)
         )
         return list(self._session.scalars(stmt))
+
+
+class TaskTemplateRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, template: TaskTemplate) -> TaskTemplate:
+        self._session.add(template)
+        self._session.flush()
+        return template
+
+    def get(self, name: str) -> TaskTemplate | None:
+        return self._session.get(TaskTemplate, name)
+
+    def list(self) -> list[TaskTemplate]:
+        return list(
+            self._session.scalars(select(TaskTemplate).order_by(TaskTemplate.name))
+        )
+
+    def delete(self, template: TaskTemplate) -> None:
+        self._session.delete(template)
+
 
 class SettingsRepository:
     def __init__(self, session: Session) -> None:

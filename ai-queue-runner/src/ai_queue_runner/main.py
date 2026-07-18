@@ -97,6 +97,73 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_subcommand_json_option(add_task)
 
+    save_template = subcommands.add_parser(
+        "save-template", help="save or overwrite a reusable task template"
+    )
+    save_template.add_argument("name", metavar="NAME")
+    save_template.add_argument("--title", required=True, help="template task title")
+    save_template.add_argument("--prompt", required=True, help="template task prompt")
+    save_template.add_argument("--project", type=Path, help="default absolute project path")
+    save_template.add_argument("--agent", choices=("claude", "codex", "any"), default="any")
+    save_template.add_argument("--priority", type=int, default=50, metavar="0-100")
+    save_template.add_argument("--estimated-tokens", type=int, default=0, metavar="N")
+    save_template.add_argument("--approval", choices=("auto", "confirm"), default="confirm")
+    save_template.add_argument("--not-before", metavar="YYYY-MM-DD HH:MM")
+    save_template.add_argument("--max-retries", type=int, default=2, metavar="N")
+    save_template.add_argument("--retry-delay", type=int, default=10, metavar="MINUTES")
+    save_template.add_argument("--repeat", metavar="daily|weekly|N")
+    save_template.add_argument("--tag", action="extend", nargs="+", default=[], metavar="TAG")
+    save_template.add_argument(
+        "--depends-on", action="extend", nargs="+", type=int, default=[], metavar="ID"
+    )
+    _add_subcommand_json_option(save_template)
+
+    list_templates = subcommands.add_parser(
+        "list-templates", help="list reusable task templates"
+    )
+    _add_subcommand_json_option(list_templates)
+
+    show_template = subcommands.add_parser(
+        "show-template", help="show one reusable task template"
+    )
+    show_template.add_argument("name", metavar="NAME")
+    _add_subcommand_json_option(show_template)
+
+    delete_template = subcommands.add_parser(
+        "delete-template", help="delete a reusable task template"
+    )
+    delete_template.add_argument("name", metavar="NAME")
+    _add_subcommand_json_option(delete_template)
+
+    add_from_template = subcommands.add_parser(
+        "add-from-template", help="render a template and add one task"
+    )
+    add_from_template.add_argument("name", metavar="NAME")
+    add_from_template.add_argument(
+        "--var", action="append", default=[], metavar="KEY=VALUE"
+    )
+    add_from_template.add_argument("--title", help="override the rendered title")
+    add_from_template.add_argument("--prompt", help="override the rendered prompt")
+    add_from_template.add_argument("--project", type=Path, help="override project path")
+    add_from_template.add_argument("--agent", choices=("claude", "codex", "any"))
+    add_from_template.add_argument("--priority", type=int, metavar="0-100")
+    add_from_template.add_argument("--estimated-tokens", type=int, metavar="N")
+    add_from_template.add_argument("--approval", choices=("auto", "confirm"))
+    add_from_template.add_argument("--not-before", metavar="YYYY-MM-DD HH:MM")
+    add_from_template.add_argument("--max-retries", type=int, metavar="N")
+    add_from_template.add_argument("--retry-delay", type=int, metavar="MINUTES")
+    add_from_template.add_argument("--repeat", metavar="daily|weekly|N")
+    add_from_template.add_argument(
+        "--tag", action="extend", nargs="+", default=None, metavar="TAG"
+    )
+    add_from_template.add_argument(
+        "--depends-on", action="extend", nargs="+", type=int, default=None, metavar="ID"
+    )
+    add_from_template.add_argument(
+        "--dry-run", action="store_true", help="validate and preview without creating a task"
+    )
+    _add_subcommand_json_option(add_from_template)
+
     list_tasks = subcommands.add_parser("list-tasks", help="list queue tasks")
     list_tasks.add_argument(
         "--status",
