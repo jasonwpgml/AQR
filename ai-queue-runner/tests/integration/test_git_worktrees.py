@@ -19,14 +19,18 @@ from ai_queue_runner.domain.enums import (
     ApprovalMode,
     TaskStatus,
 )
-from ai_queue_runner.domain.models import Task
+from ai_queue_runner.domain.models import Task, TaskRun
 from ai_queue_runner.infrastructure.database import (
     create_db_engine,
     init_db,
     make_session_factory,
 )
 from ai_queue_runner.infrastructure.git_worktrees import GitWorktreeManager
-from ai_queue_runner.infrastructure.repositories import AgentStateRepository, TaskRepository
+from ai_queue_runner.infrastructure.repositories import (
+    AgentStateRepository,
+    TaskRepository,
+    TaskRunRepository,
+)
 from ai_queue_runner.main import main
 
 
@@ -159,6 +163,16 @@ def test_cleanup_cli_refuses_unmerged_branch_then_removes_merged_worktree(
         repo = TaskRepository(session)
         repo.set_status(task, TaskStatus.RESERVED)
         repo.set_status(task, TaskStatus.RUNNING)
+        TaskRunRepository(session).add(
+            TaskRun(
+                task_id=task_id,
+                agent=AgentName.CODEX,
+                attempt=1,
+                command=["codex"],
+                worktree_path=str(prepared.path),
+                worktree_branch=prepared.branch,
+            )
+        )
         repo.set_status(task, TaskStatus.SUCCEEDED)
         session.commit()
     engine.dispose()
@@ -173,6 +187,18 @@ def test_cleanup_cli_refuses_unmerged_branch_then_removes_merged_worktree(
     payload = json.loads(capsys.readouterr().out)
     assert payload["worktree_branch"] == prepared.branch
     assert not prepared.path.exists()
+    assert main(["--config", str(config_path), "--json", "show-task", str(task_id)]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["use_worktree"] is False
+    assert shown["worktree_path"] is None
+    assert shown["worktree_branch"] is None
+    assert shown["recent_runs"][0]["worktree_path"] == str(prepared.path)
+    assert shown["recent_runs"][0]["worktree_branch"] == prepared.branch
+
+    assert main(args) == 2
+    error = capsys.readouterr().err
+    assert "no recorded worktree" in error
+
     branch_lookup = _git(
         git_project,
         "show-ref",

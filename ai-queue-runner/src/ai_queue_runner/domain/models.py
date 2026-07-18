@@ -37,6 +37,8 @@ from ai_queue_runner.domain.enums import (
     ApprovalMode,
     ErrorType,
     ReviewVerdict,
+    TaskCreator,
+    TaskEventAction,
     TaskStatus,
 )
 
@@ -87,6 +89,10 @@ class Task(Base):
     title: Mapped[str] = mapped_column(Text)
     prompt: Mapped[str] = mapped_column(Text)
     project_path: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[TaskCreator] = mapped_column(
+        _enum(TaskCreator), default=TaskCreator.USER
+    )
+    creator_session_id: Mapped[str | None] = mapped_column(Text, default=None)
     agent_policy: Mapped[AgentPolicy] = mapped_column(_enum(AgentPolicy))
     assigned_agent: Mapped[AgentName | None] = mapped_column(_enum(AgentName), default=None)
     fallback_agent: Mapped[AgentName | None] = mapped_column(_enum(AgentName), default=None)
@@ -96,6 +102,7 @@ class Task(Base):
     approval_mode: Mapped[ApprovalMode] = mapped_column(
         _enum(ApprovalMode), default=ApprovalMode.CONFIRM
     )
+    auto_commit: Mapped[bool] = mapped_column(Boolean, default=False)
     max_retries: Mapped[int] = mapped_column(default=2)
     retry_count: Mapped[int] = mapped_column(default=0)
     retry_delay_minutes: Mapped[int] = mapped_column(default=10)
@@ -213,6 +220,8 @@ class TaskRun(Base):
     )
     worktree_path: Mapped[str | None] = mapped_column(Text, default=None)
     worktree_branch: Mapped[str | None] = mapped_column(Text, default=None)
+    auto_commit_hash: Mapped[str | None] = mapped_column(Text, default=None)
+    auto_commit_result: Mapped[str | None] = mapped_column(Text, default=None)
 
     task: Mapped[Task] = relationship(back_populates="runs")
 
@@ -267,12 +276,17 @@ class TaskTemplate(Base):
     title: Mapped[str] = mapped_column(Text)
     prompt: Mapped[str] = mapped_column(Text)
     project_path: Mapped[str | None] = mapped_column(Text, default=None)
+    created_by: Mapped[TaskCreator] = mapped_column(
+        _enum(TaskCreator), default=TaskCreator.USER
+    )
+    creator_session_id: Mapped[str | None] = mapped_column(Text, default=None)
     agent_policy: Mapped[AgentPolicy] = mapped_column(_enum(AgentPolicy))
     priority: Mapped[int] = mapped_column(default=50)
     estimated_tokens: Mapped[int] = mapped_column(Integer, default=0)
     approval_mode: Mapped[ApprovalMode] = mapped_column(
         _enum(ApprovalMode), default=ApprovalMode.CONFIRM
     )
+    auto_commit: Mapped[bool] = mapped_column(Boolean, default=False)
     max_retries: Mapped[int] = mapped_column(default=2)
     retry_delay_minutes: Mapped[int] = mapped_column(default=10)
     recurrence_interval_days: Mapped[int | None] = mapped_column(Integer, default=None)
@@ -283,6 +297,25 @@ class TaskTemplate(Base):
     )
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class TaskEvent(Base):
+    """Durable management history that intentionally survives task deletion."""
+
+    __tablename__ = "task_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # AIDEV-NOTE: no FK by design: a permanent task deletion must retain its audit trail.
+    # task_created_at disambiguates a numeric task ID if SQLite later reuses that ID.
+    task_id: Mapped[int] = mapped_column(Integer, index=True)
+    task_created_at: Mapped[datetime] = mapped_column()
+    action: Mapped[TaskEventAction] = mapped_column(_enum(TaskEventAction))
+    actor: Mapped[TaskCreator] = mapped_column(_enum(TaskCreator))
+    actor_session_id: Mapped[str | None] = mapped_column(Text, default=None)
+    project_path: Mapped[str] = mapped_column(Text, index=True)
+    task_title: Mapped[str] = mapped_column(Text)
+    details: Mapped[dict[str, object]] = mapped_column("details_json", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
 class Setting(Base):

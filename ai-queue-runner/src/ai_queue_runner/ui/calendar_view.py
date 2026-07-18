@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ai_queue_runner.application.daily_summary_formatter import format_daily_summary
 from ai_queue_runner.domain.enums import TaskStatus
 
 _GROUPS = ("완료", "실패·취소", "예정", "생성")
@@ -175,7 +176,7 @@ class CalendarView(QWidget):
         QMessageBox.information(
             self,
             f"{selected_date.isoformat()} 일일 요약",
-            _daily_summary_text(summary),
+            format_daily_summary(summary),
         )
 
 
@@ -201,45 +202,3 @@ def _is_local_date(value: datetime | None, expected: date) -> bool:
 
 def _to_qdate(value: date) -> QDate:
     return QDate(value.year, value.month, value.day)
-
-
-def _daily_summary_text(summary: object) -> str:
-    totals = summary.totals
-    lines = [
-        _summary_counts_text("전체", totals),
-        "사용량 제한 대기: "
-        f"Claude {'발생' if totals.claude_usage_limit_wait_occurred else '없음'}, "
-        f"Codex {'발생' if totals.codex_usage_limit_wait_occurred else '없음'}",
-    ]
-    if not summary.projects:
-        lines.append("프로젝트 활동이 없습니다.")
-        return "\n".join(lines)
-    for project in summary.projects:
-        lines.extend(("", project.project_path, _summary_counts_text("결과", project)))
-        branches = ", ".join(project.worktree_branches) or "-"
-        lines.append(f"worktree: {branches}")
-        lines.extend(
-            f"실패 #{task.id} {task.title} "
-            f"({_enum_text(task.last_error_type) or '오류 유형 없음'})"
-            for task in project.failed_tasks
-        )
-    return "\n".join(lines)
-
-
-def _summary_counts_text(label: str, value: object) -> str:
-    seconds = max(0, round(value.total_runtime_seconds))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return (
-        f"{label}: 완료 {value.succeeded_count} · 실패 {value.failed_count} · "
-        f"차단 {value.blocked_count} · 취소 {value.cancelled_count}\n"
-        f"실행 {hours:02d}:{minutes:02d}:{seconds:02d} · "
-        f"Claude {value.claude_run_count}회 · Codex {value.codex_run_count}회 · "
-        f"fallback {value.fallback_count}회"
-    )
-
-
-def _enum_text(value: object) -> str | None:
-    if value is None:
-        return None
-    return str(getattr(value, "value", value))

@@ -47,6 +47,28 @@ class ApprovalMode(StrEnum):
     CONFIRM = "confirm"
 
 
+class TaskCreator(StrEnum):
+    """Origin recorded on tasks so an AI can rediscover work across sessions."""
+
+    UNKNOWN = "unknown"
+    USER = "user"
+    CLAUDE = "claude"
+    CODEX = "codex"
+    SYSTEM = "system"
+
+
+class TaskEventAction(StrEnum):
+    CREATED = "created"
+    UPDATED = "updated"
+    CANCELLED = "cancelled"
+    RETRIED = "retried"
+    PROMOTED = "promoted"
+    ARCHIVED = "archived"
+    REVIEWED = "reviewed"
+    SPLIT = "split"
+    DELETED = "deleted"
+
+
 class ReviewVerdict(StrEnum):
     PASS = "pass"
     FAIL = "fail"

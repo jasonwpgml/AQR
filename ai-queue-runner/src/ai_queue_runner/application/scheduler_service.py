@@ -74,7 +74,7 @@ def reserve_next_task(
             if candidate is None:
                 session.rollback()
                 return None
-            use_worktree = candidate.use_worktree or (
+            reserve_isolated = candidate.use_worktree or (
                 config.scheduler.worktree_parallel_enabled
                 and _project_is_locked(tasks, candidate)
             )
@@ -83,7 +83,7 @@ def reserve_next_task(
                 candidate,
                 agent,
                 now_,
-                use_worktree=use_worktree,
+                reserve_isolated=reserve_isolated,
             ):
                 return candidate
             session.rollback()  # lost the race; re-select on next attempt
@@ -134,7 +134,7 @@ def reserve_specific_task(
         if candidate is None or candidate.id != task_id:
             session.rollback()
             return None
-        use_worktree = candidate.use_worktree or (
+        reserve_isolated = candidate.use_worktree or (
             config.scheduler.worktree_parallel_enabled
             and _project_is_locked(locking_tasks, candidate)
         )
@@ -143,7 +143,7 @@ def reserve_specific_task(
             candidate,
             agent,
             now,
-            use_worktree=use_worktree,
+            reserve_isolated=reserve_isolated,
         ):
             return candidate
         session.rollback()
@@ -158,7 +158,7 @@ def _claim_task(
     agent: AgentName,
     now: datetime,
     *,
-    use_worktree: bool,
+    reserve_isolated: bool,
 ) -> bool:
     locking_task = aliased(Task)
     project_lock_exists = exists().where(
@@ -167,10 +167,13 @@ def _claim_task(
         locking_task.status.in_(LOCKING_STATUSES),
     )
     claim_conditions = [Task.id == candidate.id, Task.status == TaskStatus.WAITING]
-    if not candidate.use_worktree:
-        # AIDEV-NOTE: a new isolated reservation must observe a conflicting lock in
-        # the same CAS; otherwise it follows the original NOT EXISTS serial path.
-        claim_conditions.append(project_lock_exists if use_worktree else ~project_lock_exists)
+    preexisting_isolation_request = candidate.use_worktree
+    if not preexisting_isolation_request:
+        # AIDEV-NOTE: computed isolation is CAS-checked against the live lock state;
+        # an already-isolated task skips this branch because it does not need a conflict.
+        claim_conditions.append(
+            project_lock_exists if reserve_isolated else ~project_lock_exists
+        )
     task_claimed = session.execute(
         update(Task)
         .where(*claim_conditions)
@@ -179,7 +182,7 @@ def _claim_task(
             assigned_agent=agent,
             reserved_at=now,
             updated_at=now,
-            use_worktree=use_worktree,
+            use_worktree=reserve_isolated,
         )
         .execution_options(synchronize_session=False)
     ).rowcount
@@ -199,12 +202,13 @@ def _claim_task(
 
 
 def _project_is_locked(tasks: Iterable[Task], candidate: Task) -> bool:
-    return any(
-        task.id != candidate.id
-        and task.project_path == candidate.project_path
-        and task.status in LOCKING_STATUSES
-        for task in tasks
+    return candidate.project_path in _locked_project_paths(
+        task for task in tasks if task.id != candidate.id
     )
+
+
+def _locked_project_paths(tasks: Iterable[Task]) -> set[str]:
+    return {task.project_path for task in tasks if task.status in LOCKING_STATUSES}
 
 
 class SchedulerService:
@@ -229,9 +233,7 @@ class SchedulerService:
         available_agents = {agent} if available_agents is None else set(available_agents)
 
         task_list = list(tasks)
-        locked_projects = {
-            task.project_path for task in task_list if task.status in LOCKING_STATUSES
-        }
+        locked_projects = _locked_project_paths(task_list)
         ranked: list[tuple[tuple[object, ...], Task]] = []
 
         for task in task_list:

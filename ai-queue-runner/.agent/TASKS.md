@@ -38,3 +38,6 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T033 atomic task splitting with dependent child batches
 [done] T034 result quality review records, pending-review queries, and atomic rework linkage
 [done] T035 reusable task templates with variable substitution and headless CLI CRUD
+[done] T036 T029-T032 review cleanup: worktree cleanup fix and simplifications
+[done] T037 opt-in automatic Git commit after successful execution
+[done] T038 AI-friendly task provenance, scoped management, audit history, and serialized migrations

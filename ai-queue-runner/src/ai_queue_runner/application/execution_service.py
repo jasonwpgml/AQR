@@ -30,6 +30,11 @@ from ai_queue_runner.infrastructure.adapters.base import (
 from ai_queue_runner.infrastructure.adapters.base import (
     summarize_output as default_summarize_output,
 )
+from ai_queue_runner.infrastructure.git_auto_commit import (
+    AutoCommitPreflight,
+    AutoCommitResult,
+    GitAutoCommitter,
+)
 from ai_queue_runner.infrastructure.path_policy import PathPolicyError, validate_project_path
 from ai_queue_runner.infrastructure.process_runner import ProcessRunner, ProcessRunResult
 from ai_queue_runner.infrastructure.repositories import (
@@ -49,9 +54,17 @@ logger = logging.getLogger(__name__)
 class ExecutionService:
     """Run a reserved task and persist every terminal outcome."""
 
-    def __init__(self, config: AppConfig, process_runner: ProcessRunner) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        process_runner: ProcessRunner,
+        auto_committer: GitAutoCommitter | None = None,
+    ) -> None:
         self._config = config
         self._process_runner = process_runner
+        self._auto_committer = auto_committer or GitAutoCommitter(
+            timeout_seconds=config.scheduler.auto_commit_git_timeout_seconds
+        )
 
     async def execute(
         self,
@@ -89,6 +102,9 @@ class ExecutionService:
             stdin_text = adapter.build_stdin(task)
         finally:
             task.project_path = original_project_path
+        # AIDEV-NOTE: this snapshot must precede agent spawn, including in reused
+        # worktrees, so an older task's changes can never be swept into this commit.
+        auto_commit_preflight = self._auto_commit_preflight(task, execution_path)
         attempt = task.retry_count + 1
         task_log_dir = self._config.app.logs_dir / "tasks" / str(task.id)
         stdout_path = task_log_dir / f"attempt_{attempt}.stdout.log"
@@ -176,7 +192,58 @@ class ExecutionService:
             stderr_path,
         )
         session.commit()
+        if task.status is TaskStatus.SUCCEEDED and auto_commit_preflight is not None:
+            self._record_auto_commit(
+                task,
+                run,
+                adapter,
+                execution_path,
+                auto_commit_preflight,
+            )
+            session.commit()
         return run
+
+    def _auto_commit_preflight(
+        self,
+        task: Task,
+        execution_path: Path,
+    ) -> AutoCommitPreflight | None:
+        if not (self._config.scheduler.auto_commit_enabled and task.auto_commit):
+            return None
+        return self._auto_committer.preflight(execution_path)
+
+    def _record_auto_commit(
+        self,
+        task: Task,
+        run: TaskRun,
+        adapter: AgentAdapter,
+        execution_path: Path,
+        preflight: AutoCommitPreflight,
+    ) -> None:
+        try:
+            result = self._auto_committer.commit(
+                execution_path,
+                preflight,
+                title=task.title,
+                task_id=task.id,
+                run_id=run.id,
+                agent=adapter.name.value,
+            )
+        except Exception as exc:
+            detail = " ".join(f"{type(exc).__name__}: {exc}".split())[:500]
+            result = AutoCommitResult(
+                None,
+                f"failed: {detail or 'unexpected auto-commit error'}",
+            )
+            logger.exception("task %s automatic commit crashed", task.id)
+        run.auto_commit_hash = result.commit_hash
+        run.auto_commit_result = result.detail
+        logger.info(
+            "task %s automatic commit result: %s%s",
+            task.id,
+            result.detail,
+            f" ({result.commit_hash})" if result.commit_hash else "",
+        )
 
     @staticmethod
     def _record_invalid_path(

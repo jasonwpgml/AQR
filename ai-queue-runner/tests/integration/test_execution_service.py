@@ -14,7 +14,14 @@ from ai_queue_runner.application.recurrence_service import enqueue_next_occurren
 from ai_queue_runner.application.scheduler_service import reserve_next_task
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
-from ai_queue_runner.domain.enums import AgentName, AgentStatus, ErrorType, TaskStatus
+from ai_queue_runner.domain.enums import (
+    AgentName,
+    AgentStatus,
+    ErrorType,
+    TaskCreator,
+    TaskEventAction,
+    TaskStatus,
+)
 from ai_queue_runner.domain.models import Task
 from ai_queue_runner.infrastructure.adapters.claude import ClaudeAdapter
 from ai_queue_runner.infrastructure.database import (
@@ -25,6 +32,7 @@ from ai_queue_runner.infrastructure.database import (
 from ai_queue_runner.infrastructure.process_runner import ProcessRunner
 from ai_queue_runner.infrastructure.repositories import (
     AgentStateRepository,
+    TaskEventRepository,
     TaskRepository,
     TaskRunRepository,
 )
@@ -133,6 +141,7 @@ async def test_recurring_success_enqueues_next_occurrence_with_copied_settings(
         priority=83,
         estimated_tokens=12_000,
         approval_mode="auto",
+        auto_commit=True,
         max_retries=4,
         retry_delay_minutes=17,
         recurrence_interval_days=7,
@@ -147,16 +156,25 @@ async def test_recurring_success_enqueues_next_occurrence_with_copied_settings(
     assert successor.title == task.title
     assert successor.prompt == task.prompt
     assert successor.project_path == task.project_path
+    assert successor.created_by is task.created_by
+    assert successor.creator_session_id == task.creator_session_id
     assert successor.agent_policy is task.agent_policy
     assert successor.priority == task.priority
     assert successor.estimated_tokens == task.estimated_tokens
     assert successor.approval_mode is task.approval_mode
+    assert successor.auto_commit is True
     assert successor.max_retries == task.max_retries
     assert successor.retry_delay_minutes == task.retry_delay_minutes
     assert successor.recurrence_interval_days == 7
     assert successor.tags == task.tags
     assert successor.assigned_agent is None
     assert successor.retry_count == 0
+    recurrence_event = TaskEventRepository(session).list(
+        task_id=successor.id,
+        task_created_at=successor.created_at,
+    )[0]
+    assert recurrence_event.action is TaskEventAction.CREATED
+    assert recurrence_event.actor is TaskCreator.SYSTEM
 
 
 async def test_recurring_completion_replay_reuses_the_single_successor(

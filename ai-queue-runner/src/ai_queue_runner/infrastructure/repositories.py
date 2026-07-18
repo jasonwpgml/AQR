@@ -13,11 +13,12 @@ from sqlalchemy import case, exists, select, update
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ai_queue_runner.domain.clock import utcnow
-from ai_queue_runner.domain.enums import AgentName, TaskStatus
+from ai_queue_runner.domain.enums import AgentName, TaskCreator, TaskStatus
 from ai_queue_runner.domain.models import (
     AgentState,
     Setting,
     Task,
+    TaskEvent,
     TaskReview,
     TaskRun,
     TaskTemplate,
@@ -42,10 +43,23 @@ class TaskRepository:
             select(Task).where(Task.recurrence_source_task_id == source_task_id)
         )
 
-    def list(self, *, status: TaskStatus | None = None) -> list[Task]:
+    def list(
+        self,
+        *,
+        status: TaskStatus | None = None,
+        project_path: str | None = None,
+        created_by: TaskCreator | None = None,
+        creator_session_id: str | None = None,
+    ) -> list[Task]:
         stmt = select(Task).options(selectinload(Task.reviews)).order_by(Task.id)
         if status is not None:
             stmt = stmt.where(Task.status == status)
+        if project_path is not None:
+            stmt = stmt.where(Task.project_path == project_path)
+        if created_by is not None:
+            stmt = stmt.where(Task.created_by == created_by)
+        if creator_session_id is not None:
+            stmt = stmt.where(Task.creator_session_id == creator_session_id)
         return list(self._session.scalars(stmt))
 
     def list_pending_reviews(self, *, project_path: str | None = None) -> list[Task]:
@@ -190,6 +204,39 @@ class TaskReviewRepository:
             .where(TaskReview.task_id == task_id)
             .order_by(TaskReview.id)
         )
+        return list(self._session.scalars(stmt))
+
+
+class TaskEventRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, task_event: TaskEvent) -> TaskEvent:
+        self._session.add(task_event)
+        self._session.flush()
+        return task_event
+
+    def list(
+        self,
+        *,
+        task_id: int | None = None,
+        task_created_at: datetime | None = None,
+        project_path: str | None = None,
+        actor: TaskCreator | None = None,
+        limit: int | None = None,
+    ) -> list[TaskEvent]:
+        stmt = select(TaskEvent)
+        if task_id is not None:
+            stmt = stmt.where(TaskEvent.task_id == task_id)
+        if task_created_at is not None:
+            stmt = stmt.where(TaskEvent.task_created_at == task_created_at)
+        if project_path is not None:
+            stmt = stmt.where(TaskEvent.project_path == project_path)
+        if actor is not None:
+            stmt = stmt.where(TaskEvent.actor == actor)
+        stmt = stmt.order_by(TaskEvent.created_at.desc(), TaskEvent.id.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
         return list(self._session.scalars(stmt))
 
 

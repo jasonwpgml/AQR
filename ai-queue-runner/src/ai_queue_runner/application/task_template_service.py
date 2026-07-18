@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_queue_runner.application.task_service import SessionFactory, TaskDraft
 from ai_queue_runner.domain.clock import utcnow
-from ai_queue_runner.domain.enums import AgentPolicy, ApprovalMode
+from ai_queue_runner.domain.enums import AgentPolicy, ApprovalMode, TaskCreator
 from ai_queue_runner.domain.models import TaskTemplate
 from ai_queue_runner.infrastructure.repositories import TaskTemplateRepository
 
@@ -25,10 +25,13 @@ class TaskTemplateDraft(BaseModel):
     title: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
     project_path: Path | None = None
+    created_by: TaskCreator | None = None
+    creator_session_id: str | None = Field(default=None, max_length=256)
     agent_policy: AgentPolicy = AgentPolicy.ANY
     priority: int = Field(default=50, ge=0, le=100)
     estimated_tokens: int = Field(default=0, ge=0)
     approval_mode: ApprovalMode = ApprovalMode.CONFIRM
+    auto_commit: bool = False
     max_retries: int = Field(default=2, ge=0)
     retry_delay_minutes: int = Field(default=10, ge=0)
     recurrence_interval_days: int | None = Field(default=None, ge=1)
@@ -65,10 +68,13 @@ class TaskTemplateView:
     title: str
     prompt: str
     project_path: str | None
+    created_by: TaskCreator
+    creator_session_id: str | None
     agent_policy: AgentPolicy
     priority: int
     estimated_tokens: int
     approval_mode: ApprovalMode
+    auto_commit: bool
     max_retries: int
     retry_delay_minutes: int
     recurrence_interval_days: int | None
@@ -80,8 +86,16 @@ class TaskTemplateView:
 
 
 class TaskTemplateService:
-    def __init__(self, session_factory: SessionFactory) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        *,
+        actor: TaskCreator | str = TaskCreator.USER,
+        actor_session_id: str | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._actor = TaskCreator(actor)
+        self._actor_session_id = _normalize_session_id(actor_session_id)
 
     def save(
         self,
@@ -93,7 +107,11 @@ class TaskTemplateService:
             repo = TaskTemplateRepository(session)
             template = repo.get(normalized_name)
             overwritten = template is not None
-            values = _template_values(draft)
+            values = _template_values(
+                draft,
+                default_creator=self._actor,
+                default_session_id=self._actor_session_id,
+            )
             if template is None:
                 template = repo.add(TaskTemplate(name=normalized_name, **values))
             else:
@@ -162,10 +180,15 @@ class TaskTemplateService:
             "title": rendered_title,
             "prompt": rendered_prompt,
             "project_path": template.project_path,
+            # Instantiated tasks belong to the current caller, while the template view
+            # retains who originally saved the reusable draft.
+            "created_by": self._actor,
+            "creator_session_id": self._actor_session_id,
             "agent_policy": template.agent_policy,
             "priority": template.priority,
             "estimated_tokens": template.estimated_tokens,
             "approval_mode": template.approval_mode,
+            "auto_commit": template.auto_commit,
             "max_retries": template.max_retries,
             "retry_delay_minutes": template.retry_delay_minutes,
             "recurrence_interval_days": template.recurrence_interval_days,
@@ -212,15 +235,27 @@ def _unresolved_placeholder_names(value: str) -> set[str]:
     }
 
 
-def _template_values(draft: TaskTemplateDraft) -> dict[str, object]:
+def _template_values(
+    draft: TaskTemplateDraft,
+    *,
+    default_creator: TaskCreator,
+    default_session_id: str | None,
+) -> dict[str, object]:
     return {
         "title": draft.title,
         "prompt": draft.prompt,
         "project_path": None if draft.project_path is None else str(draft.project_path),
+        "created_by": draft.created_by or default_creator,
+        "creator_session_id": (
+            draft.creator_session_id
+            if draft.creator_session_id is not None
+            else default_session_id
+        ),
         "agent_policy": draft.agent_policy,
         "priority": draft.priority,
         "estimated_tokens": draft.estimated_tokens,
         "approval_mode": draft.approval_mode,
+        "auto_commit": draft.auto_commit,
         "max_retries": draft.max_retries,
         "retry_delay_minutes": draft.retry_delay_minutes,
         "recurrence_interval_days": draft.recurrence_interval_days,
@@ -236,10 +271,13 @@ def _to_view(template: TaskTemplate) -> TaskTemplateView:
         title=template.title,
         prompt=template.prompt,
         project_path=template.project_path,
+        created_by=template.created_by,
+        creator_session_id=template.creator_session_id,
         agent_policy=template.agent_policy,
         priority=template.priority,
         estimated_tokens=template.estimated_tokens,
         approval_mode=template.approval_mode,
+        auto_commit=template.auto_commit,
         max_retries=template.max_retries,
         retry_delay_minutes=template.retry_delay_minutes,
         recurrence_interval_days=template.recurrence_interval_days,
@@ -249,3 +287,14 @@ def _to_view(template: TaskTemplate) -> TaskTemplateView:
         created_at=template.created_at,
         updated_at=template.updated_at,
     )
+
+
+def _normalize_session_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("creator session ID must not be empty")
+    if len(normalized) > 256:
+        raise ValueError("creator session ID must be at most 256 characters")
+    return normalized

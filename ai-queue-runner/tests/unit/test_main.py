@@ -126,6 +126,7 @@ def test_cli_add_task_uses_real_service_and_rejects_outside_path(tmp_path, capsy
         "codex",
         "--priority",
         75,
+        "--auto-commit",
         as_json=True,
     )
 
@@ -140,6 +141,7 @@ def test_cli_add_task_uses_real_service_and_rejects_outside_path(tmp_path, capsy
     assert created.title == "CLI 작업"
     assert created.agent_policy.value == "codex"
     assert created.priority == 75
+    assert created.auto_commit is True
     assert created.project_path == str(project.resolve())
     engine.dispose()
 
@@ -162,6 +164,84 @@ def test_cli_add_task_uses_real_service_and_rejects_outside_path(tmp_path, capsy
     assert "Traceback" not in error
 
 
+def test_cli_scopes_tasks_by_project_creator_and_preserves_delete_events(
+    tmp_path, capsys
+):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    project = allowed_root / "project"
+    project.mkdir()
+    actor_prefix = [
+        "--config",
+        str(config_path),
+        "--actor",
+        "codex",
+        "--actor-session",
+        "session-42",
+        "--json",
+    ]
+    assert main(
+        [
+            *actor_prefix,
+            "add-task",
+            "--title",
+            "Codex 작업",
+            "--prompt",
+            "프로젝트를 점검하세요.",
+            "--project",
+            str(project),
+        ]
+    ) == 0
+    created = json.loads(capsys.readouterr().out)
+    assert created["created_by"] == "codex"
+    assert created["creator_session_id"] == "session-42"
+
+    assert main(
+        cli_args(
+            config_path,
+            "list-tasks",
+            "--project",
+            project,
+            "--created-by",
+            "codex",
+            "--creator-session",
+            "session-42",
+            "--active",
+            as_json=True,
+        )
+    ) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert [task["id"] for task in listed] == [created["id"]]
+
+    assert main(
+        [
+            *actor_prefix,
+            "delete-tasks",
+            "--project",
+            str(project),
+            "--created-by",
+            "codex",
+            "--creator-session",
+            "session-42",
+        ]
+    ) == 0
+    deleted = json.loads(capsys.readouterr().out)
+    assert deleted["deleted_ids"] == [created["id"]]
+    assert deleted["skipped"] == []
+
+    assert main(
+        cli_args(
+            config_path,
+            "list-events",
+            "--task-id",
+            created["id"],
+            as_json=True,
+        )
+    ) == 0
+    events = json.loads(capsys.readouterr().out)
+    assert [event["action"] for event in events] == ["deleted", "created"]
+    assert all(event["actor"] == "codex" for event in events)
+
+
 def test_cli_template_crud_reports_overwrite(tmp_path, capsys):
     config_path, allowed_root = write_cli_config(tmp_path)
     project = allowed_root / "project"
@@ -179,6 +259,7 @@ def test_cli_template_crud_reports_overwrite(tmp_path, capsys):
         project,
         "--agent",
         "codex",
+        "--auto-commit",
         as_json=True,
     )
     assert main(save) == 0
@@ -196,6 +277,7 @@ def test_cli_template_crud_reports_overwrite(tmp_path, capsys):
     shown = json.loads(capsys.readouterr().out)
     assert shown["title"] == "{feature} 구현 및 검증"
     assert shown["agent_policy"] == "codex"
+    assert shown["auto_commit"] is True
 
     assert main(cli_args(config_path, "delete-template", "feature", as_json=True)) == 0
     assert json.loads(capsys.readouterr().out) == {"deleted": "feature"}
@@ -330,6 +412,8 @@ def test_cli_list_filter_show_and_json_include_stable_fields(tmp_path, capsys):
                 result_summary="테스트 통과",
                 error_type=ErrorType.UNKNOWN,
                 fallback_to_agent=AgentName.CLAUDE,
+                auto_commit_hash="abc123",
+                auto_commit_result="committed",
             )
         )
         session.commit()
@@ -351,11 +435,14 @@ def test_cli_list_filter_show_and_json_include_stable_fields(tmp_path, capsys):
     assert shown["created_at"].endswith("Z")
     assert shown["recent_runs"][0]["result_summary"] == "테스트 통과"
     assert shown["recent_runs"][0]["fallback_to_agent"] == "claude"
+    assert shown["recent_runs"][0]["auto_commit_hash"] == "abc123"
+    assert shown["recent_runs"][0]["auto_commit_result"] == "committed"
 
     assert main(cli_args(config_path, "show-task", first["id"])) == 0
     text = capsys.readouterr().out
     assert "last_error: -" in text
     assert "fallback=codex->claude" in text
+    assert "auto_commit=abc123" in text
     assert "result_summary=테스트 통과" in text
 
 
@@ -544,6 +631,7 @@ def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
         90,
         "--estimated-tokens",
         1_500,
+        "--auto-commit",
         as_json=True,
     )
     assert main(args) == 0
@@ -551,8 +639,20 @@ def test_cli_update_task_overlays_only_provided_flags(tmp_path, capsys):
     assert payload["approval_mode"] == "auto"
     assert payload["priority"] == 90
     assert payload["estimated_tokens"] == 1_500
+    assert payload["auto_commit"] is True
     assert payload["title"] == "원래 제목"
     assert payload["agent_policy"] == "any"
+
+    assert main(
+        cli_args(
+            config_path,
+            "update-task",
+            task_id,
+            "--no-auto-commit",
+            as_json=True,
+        )
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["auto_commit"] is False
 
     conflict = cli_args(
         config_path,

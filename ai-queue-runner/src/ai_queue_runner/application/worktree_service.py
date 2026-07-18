@@ -17,7 +17,7 @@ from ai_queue_runner.infrastructure.git_worktrees import (
     GitWorktreeError,
     GitWorktreeManager,
 )
-from ai_queue_runner.infrastructure.repositories import TaskRepository, TaskRunRepository
+from ai_queue_runner.infrastructure.repositories import TaskRepository
 
 SessionFactory = Callable[[], Session]
 logger = logging.getLogger(__name__)
@@ -93,17 +93,8 @@ class WorktreeService:
                 raise KeyError(f"task {task_id} not found")
             if task.status not in _CLEANUP_STATUSES:
                 raise ValueError("worktrees can only be cleaned up for completed tasks")
-            runs = TaskRunRepository(session).list_for_task(task_id)
-            latest_worktree_run = next(
-                (run for run in reversed(runs) if run.worktree_path and run.worktree_branch),
-                None,
-            )
-            path = task.worktree_path or (
-                None if latest_worktree_run is None else latest_worktree_run.worktree_path
-            )
-            branch = task.worktree_branch or (
-                None if latest_worktree_run is None else latest_worktree_run.worktree_branch
-            )
+            path = task.worktree_path
+            branch = task.worktree_branch
             if not path or not branch:
                 raise ValueError(f"task {task_id} has no recorded worktree")
             project_path = task.project_path
@@ -113,6 +104,8 @@ class WorktreeService:
             task = TaskRepository(session).get(task_id)
             if task is not None:
                 task.use_worktree = False
+                task.worktree_path = None
+                task.worktree_branch = None
                 session.commit()
         return WorktreeCleanupView(
             task_id=task_id,

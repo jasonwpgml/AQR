@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
@@ -9,6 +11,8 @@ from ai_queue_runner.infrastructure.database import (
     SCHEMA_VERSION,
     _migrate_v6_to_v7,
     _migrate_v7_to_v8,
+    _migrate_v8_to_v9,
+    _migrate_v9_to_v10,
     create_db_engine,
     init_db,
     make_session_factory,
@@ -344,6 +348,145 @@ class TestPersistence:
         with factory() as session:
             assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
         engine.dispose()
+
+    def test_schema_v8_auto_commit_migration_is_retry_safe(self, tmp_path):
+        db_path = tmp_path / "v8.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+            connection.exec_driver_sql("INSERT INTO tasks (id) VALUES (1)")
+            connection.exec_driver_sql(
+                "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE task_templates (name TEXT NOT NULL PRIMARY KEY)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '8')"
+            )
+
+        factory = make_session_factory(engine)
+        with factory() as session:
+            _migrate_v8_to_v9(session)
+            _migrate_v8_to_v9(session)
+            session.commit()
+
+        init_db(engine)
+        task_columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+        run_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_runs")
+        }
+        template_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_templates")
+        }
+        assert "auto_commit" in task_columns
+        assert {"auto_commit_hash", "auto_commit_result"} <= run_columns
+        assert "auto_commit" in template_columns
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT auto_commit FROM tasks WHERE id = 1"
+            ).scalar_one() == 0
+        with factory() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
+
+    def test_schema_v9_task_identity_and_event_migration_is_retry_safe(self, tmp_path):
+        db_path = tmp_path / "v9.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+            connection.exec_driver_sql("INSERT INTO tasks (id) VALUES (1)")
+            connection.exec_driver_sql(
+                "CREATE TABLE task_templates (name TEXT NOT NULL PRIMARY KEY)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '9')"
+            )
+
+        factory = make_session_factory(engine)
+        with factory() as session:
+            _migrate_v9_to_v10(session)
+            _migrate_v9_to_v10(session)
+            session.commit()
+
+        init_db(engine)
+        task_columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+        template_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_templates")
+        }
+        event_columns = {
+            column["name"] for column in inspect(engine).get_columns("task_events")
+        }
+        assert {"created_by", "creator_session_id"} <= task_columns
+        assert {"created_by", "creator_session_id"} <= template_columns
+        assert {
+            "task_id",
+            "task_created_at",
+            "action",
+            "actor",
+            "project_path",
+            "details_json",
+        } <= event_columns
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT created_by FROM tasks WHERE id = 1"
+            ).scalar_one() == "unknown"
+        engine.dispose()
+
+    def test_legacy_database_without_version_is_inferred_and_migrated(self, tmp_path):
+        db_path = tmp_path / "legacy.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE tasks (id INTEGER PRIMARY KEY, estimated_tokens INTEGER "
+                "NOT NULL DEFAULT 0)"
+            )
+            connection.exec_driver_sql("INSERT INTO tasks (id) VALUES (1)")
+
+        init_db(engine)
+
+        columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+        assert {"fallback_agent", "auto_commit", "created_by"} <= columns
+        with make_session_factory(engine)() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
+
+    def test_concurrent_initialization_serializes_migrations(self, tmp_path):
+        db_path = tmp_path / "concurrent.db"
+        seed_engine = create_db_engine(db_path)
+        with seed_engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '1')"
+            )
+        seed_engine.dispose()
+
+        def initialize() -> None:
+            engine = create_db_engine(db_path)
+            try:
+                init_db(engine)
+            finally:
+                engine.dispose()
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda _index: initialize(), range(8)))
+
+        final_engine = create_db_engine(db_path)
+        with make_session_factory(final_engine)() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        assert "created_by" in {
+            column["name"] for column in inspect(final_engine).get_columns("tasks")
+        }
+        final_engine.dispose()
 
 
 class TestDependencies:

@@ -21,9 +21,10 @@ class TaskColumn(IntEnum):
     STATUS = 2
     TITLE = 3
     PROJECT = 4
+    CREATOR = 5
 
 
-_HEADERS = ("우선순위", "AI", "상태", "제목", "프로젝트")
+_HEADERS = ("우선순위", "AI", "상태", "제목", "프로젝트", "생성자")
 _STATUS_LABELS = {
     TaskStatus.WAITING.value: "대기",
     TaskStatus.RESERVED.value: "예약",
@@ -117,8 +118,10 @@ class TaskTableModel(QAbstractTableModel):
             return _STATUS_LABELS.get(status, status)
         if column is TaskColumn.TITLE:
             return getattr(task, "title", "")
-        project_path = str(getattr(task, "project_path", ""))
-        return Path(project_path).name or project_path
+        if column is TaskColumn.PROJECT:
+            project_path = str(getattr(task, "project_path", ""))
+            return Path(project_path).name or project_path
+        return enum_value(getattr(task, "created_by", "unknown"))
 
     def set_tasks(self, tasks: list[object]) -> None:
         self.beginResetModel()
