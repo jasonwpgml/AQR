@@ -22,13 +22,16 @@
 
 ## 완전 자동 실행(사용자 승인 없음) 조건
 
-세 가지가 모두 충족되어야 승인 창 없이 실행된다.
+네 가지가 모두 충족되어야 승인 창 없이 실행된다.
 
 1. `config.toml`의 `[app] global_auto_run = true`
 2. 작업의 승인 모드가 `auto` → **작업 추가 시 `--approval auto`를 명시할 것** (기본값은 `confirm`)
 3. GUI 앱이 떠 있고 스케줄러가 시작된 상태
    - 실행 엔진은 GUI 프로세스 안에서만 동작한다. CLI는 큐(DB)만 조작한다.
    - 트레이로 최소화된 상태여도 스케줄러는 계속 돈다.
+4. 실행할 에이전트 상태가 `available` → **새 DB는 `unknown`으로 시작하므로 최초 1회
+   `set-agent codex available`(또는 claude)을 실행할 것.** `unknown`/`limited` 에이전트에는
+   작업이 예약되지 않는다. 현재 상태는 `queue-status`로 확인.
 
 `--approval confirm` 작업은 GUI 승인 창에서 사용자가 허용해야 실행된다.
 승인 창에서 거부된 작업은 `blocked` 상태로 남는다 → `retry-task`로 재대기시킬 수 있다.
