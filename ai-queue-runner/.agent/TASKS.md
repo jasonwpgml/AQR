@@ -36,3 +36,4 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T031 opt-in Git worktree isolation for same-project parallel tasks
 [done] T032 daily project activity summary for CLI and calendar UI
 [done] T033 atomic task splitting with dependent child batches
+[done] T034 result quality review records, pending-review queries, and atomic rework linkage

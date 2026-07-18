@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -125,12 +125,49 @@ def _migrate_v5_to_v6(session: Session) -> None:
     )
 
 
+def _migrate_v6_to_v7(session: Session) -> None:
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "rework_of_task_id" not in task_columns:
+        session.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN rework_of_task_id INTEGER "
+                "REFERENCES tasks(id) ON DELETE RESTRICT"
+            )
+        )
+    session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_tasks_rework_of_task_id "
+            "ON tasks(rework_of_task_id)"
+        )
+    )
+    session.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS task_reviews ("
+            "id INTEGER NOT NULL PRIMARY KEY, "
+            "task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, "
+            "verdict VARCHAR(4) NOT NULL CHECK (verdict IN ('pass', 'fail')), "
+            "score INTEGER CHECK (score IS NULL OR score BETWEEN 1 AND 5), "
+            "notes TEXT, reviewed_at DATETIME NOT NULL)"
+        )
+    )
+    session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_task_reviews_task_id "
+            "ON task_reviews(task_id)"
+        )
+    )
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
     4: _migrate_v4_to_v5,
     5: _migrate_v5_to_v6,
+    6: _migrate_v6_to_v7,
 }
 
 

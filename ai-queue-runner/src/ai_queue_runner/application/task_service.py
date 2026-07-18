@@ -19,11 +19,16 @@ from ai_queue_runner.domain.enums import (
     AgentPolicy,
     ApprovalMode,
     ErrorType,
+    ReviewVerdict,
     TaskStatus,
 )
-from ai_queue_runner.domain.models import Task, TaskRun
+from ai_queue_runner.domain.models import Task, TaskReview, TaskRun
 from ai_queue_runner.infrastructure.path_policy import validate_project_path
-from ai_queue_runner.infrastructure.repositories import TaskRepository, TaskRunRepository
+from ai_queue_runner.infrastructure.repositories import (
+    TaskRepository,
+    TaskReviewRepository,
+    TaskRunRepository,
+)
 
 SessionFactory = Callable[[], Session]
 
@@ -114,11 +119,45 @@ class TaskView:
     dependency_ids: tuple[int, ...]
     split_parent_task_id: int | None
     split_child_ids: tuple[int, ...]
+    rework_of_task_id: int | None
+    rework_task_ids: tuple[int, ...]
+    review_verdict: ReviewVerdict | None
+    review_score: int | None
+    review_notes: str | None
+    reviewed_at: datetime | None
+    review_count: int
     archived: bool
     use_worktree: bool
     worktree_path: str | None
     worktree_branch: str | None
     estimated_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class PendingReviewView:
+    id: int
+    title: str
+    project_path: str
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ReviewView:
+    id: int
+    task_id: int
+    verdict: ReviewVerdict
+    score: int | None
+    notes: str | None
+    reviewed_at: datetime
+    revision: int
+
+
+@dataclass(frozen=True)
+class TaskReviewResultView:
+    task: TaskView
+    review: ReviewView
+    previous_review_count: int
+    rework_task: TaskView | None
 
 
 @dataclass(frozen=True)
@@ -238,6 +277,91 @@ class TaskService:
         with self._session_factory() as session:
             task = TaskRepository(session).get(task_id)
             return None if task is None else _to_task_view(task)
+
+    def pending_reviews(
+        self,
+        *,
+        project_path: Path | str | None = None,
+    ) -> list[PendingReviewView]:
+        canonical_path = (
+            None
+            if project_path is None
+            else str(self._canonical_project_path(project_path))
+        )
+        with self._session_factory() as session:
+            tasks = TaskRepository(session).list_pending_reviews(
+                project_path=canonical_path
+            )
+            return [
+                PendingReviewView(
+                    id=task.id,
+                    title=task.title,
+                    project_path=task.project_path,
+                    finished_at=task.finished_at,
+                )
+                for task in tasks
+            ]
+
+    def review_task(
+        self,
+        task_id: int,
+        *,
+        verdict: ReviewVerdict | str,
+        score: int | None = None,
+        notes: str | None = None,
+        reopen_prompt: str | None = None,
+    ) -> TaskReviewResultView:
+        normalized_verdict = ReviewVerdict(verdict)
+        if score is not None and not 1 <= score <= 5:
+            raise ValueError("review score must be between 1 and 5")
+        if reopen_prompt is not None:
+            if normalized_verdict is not ReviewVerdict.FAIL:
+                raise ValueError("--reopen can only be used with verdict fail")
+            if not reopen_prompt.strip():
+                raise ValueError("--reopen prompt must not be empty")
+
+        with self._session_factory() as session:
+            task_repo = TaskRepository(session)
+            review_repo = TaskReviewRepository(session)
+            task = self._require_task(task_repo, task_id)
+            if task.status is not TaskStatus.SUCCEEDED:
+                raise ValueError("only succeeded tasks can be reviewed")
+            previous_reviews = review_repo.list_for_task(task_id)
+            review = review_repo.add(
+                TaskReview(
+                    task_id=task.id,
+                    verdict=normalized_verdict,
+                    score=score,
+                    notes=notes.strip() if notes and notes.strip() else None,
+                    reviewed_at=utcnow(),
+                )
+            )
+            rework_task = None
+            if reopen_prompt is not None:
+                rework_task = task_repo.add(
+                    Task(
+                        title=f"Rework: {task.title}",
+                        prompt=reopen_prompt.strip(),
+                        project_path=task.project_path,
+                        agent_policy=task.agent_policy,
+                        priority=task.priority,
+                        estimated_tokens=task.estimated_tokens,
+                        approval_mode=task.approval_mode,
+                        max_retries=task.max_retries,
+                        retry_delay_minutes=task.retry_delay_minutes,
+                        tags=[tag for tag in task.tags if tag != _ARCHIVED_TAG],
+                        rework_of_task_id=task.id,
+                    )
+                )
+            session.commit()
+            return TaskReviewResultView(
+                task=_to_task_view(task),
+                review=_to_review_view(review, len(previous_reviews) + 1),
+                previous_review_count=len(previous_reviews),
+                rework_task=(
+                    None if rework_task is None else _to_task_view(rework_task)
+                ),
+            )
 
     def activity_between(
         self,
@@ -712,6 +836,7 @@ def _depends_on(task: Task, target_id: int, seen: set[int] | None = None) -> boo
 
 
 def _to_task_view(task: Task) -> TaskView:
+    latest_review = task.reviews[-1] if task.reviews else None
     return TaskView(
         id=task.id,
         title=task.title,
@@ -739,11 +864,30 @@ def _to_task_view(task: Task) -> TaskView:
         dependency_ids=tuple(sorted(dependency.id for dependency in task.depends_on)),
         split_parent_task_id=task.split_parent_task_id,
         split_child_ids=tuple(child.id for child in task.split_children),
+        rework_of_task_id=task.rework_of_task_id,
+        rework_task_ids=tuple(child.id for child in task.rework_tasks),
+        review_verdict=None if latest_review is None else latest_review.verdict,
+        review_score=None if latest_review is None else latest_review.score,
+        review_notes=None if latest_review is None else latest_review.notes,
+        reviewed_at=None if latest_review is None else latest_review.reviewed_at,
+        review_count=len(task.reviews),
         archived=_is_archived(task),
         use_worktree=task.use_worktree,
         worktree_path=task.worktree_path,
         worktree_branch=task.worktree_branch,
         estimated_tokens=task.estimated_tokens,
+    )
+
+
+def _to_review_view(review: TaskReview, revision: int) -> ReviewView:
+    return ReviewView(
+        id=review.id,
+        task_id=review.task_id,
+        verdict=review.verdict,
+        score=review.score,
+        notes=review.notes,
+        reviewed_at=review.reviewed_at,
+        revision=revision,
     )
 
 

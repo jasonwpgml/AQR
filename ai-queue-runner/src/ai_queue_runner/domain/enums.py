@@ -47,6 +47,11 @@ class ApprovalMode(StrEnum):
     CONFIRM = "confirm"
 
 
+class ReviewVerdict(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+
+
 class ErrorType(StrEnum):
     """Classification of a failed task run (plan §6.1 classify_error)."""
 
