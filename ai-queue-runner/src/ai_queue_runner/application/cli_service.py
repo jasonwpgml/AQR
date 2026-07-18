@@ -13,7 +13,11 @@ from pydantic import ValidationError
 
 from ai_queue_runner.application.agent_service import AgentService, AgentView
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
-from ai_queue_runner.application.workload_planning import WorkloadBatch, plan_workload
+from ai_queue_runner.application.workload_planning import (
+    WorkloadBatch,
+    WorkloadPlan,
+    plan_workload,
+)
 from ai_queue_runner.application.worktree_service import WorktreeService
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.enums import TaskStatus
@@ -157,6 +161,8 @@ def _dispatch(
         return _json_or_text(payload, _daily_summary_text(payload), args.json)
     if args.command == "plan-batch":
         return _plan_batch(args, service)
+    if args.command == "split-task":
+        return _split_task(args, service)
     if args.command == "cleanup-worktree":
         cleaned = worktrees.cleanup(args.task_id)
         return _json_or_text(
@@ -279,22 +285,13 @@ def _queue_status(
 def _plan_batch(args: argparse.Namespace, service: TaskService) -> str:
     batch = _load_workload_batch(args.plan_path)
     plan = plan_workload(batch)
-    created = [] if args.dry_run else service.create_batch(
-        [assignment.draft for assignment in plan.assignments]
-    )
-    records = []
-    for index, assignment in enumerate(plan.assignments):
-        task = None if args.dry_run else created[index]
-        records.append(
-            {
-                "input_index": assignment.input_index,
-                "id": None if task is None else task.id,
-                "title": assignment.draft.title,
-                "requested_agent_policy": assignment.requested_policy.value,
-                "assigned_agent": assignment.assigned_agent.value,
-                "estimated_tokens": assignment.draft.estimated_tokens,
-            }
-        )
+    drafts = [assignment.draft for assignment in plan.assignments]
+    if args.dry_run:
+        service.validate_batch(drafts)
+        created = []
+    else:
+        created = service.create_batch(drafts)
+    records = _workload_task_records(plan, created)
     payload = {
         "enqueued": not args.dry_run,
         "budgets": {
@@ -321,6 +318,71 @@ def _plan_batch(args: argparse.Namespace, service: TaskService) -> str:
         for record in records
     )
     return _json_or_text(payload, "\n".join(lines), args.json)
+
+
+def _split_task(args: argparse.Namespace, service: TaskService) -> str:
+    batch = _load_workload_batch(args.plan_path)
+    plan = plan_workload(batch)
+    result = service.split_task(
+        args.task_id,
+        [assignment.draft for assignment in plan.assignments],
+        dry_run=args.dry_run,
+    )
+    records = _workload_task_records(plan, list(result.children))
+    payload = {
+        "split": not args.dry_run,
+        "original_task": _task_record(result.original),
+        "rewired_dependent_ids": list(result.rewired_dependent_ids),
+        "budgets": {
+            "claude": plan.budgets.claude,
+            "codex": plan.budgets.codex,
+        },
+        "assigned_tokens": {
+            agent.value: tokens for agent, tokens in plan.assigned_tokens.items()
+        },
+        "remaining_tokens": {
+            agent.value: tokens for agent, tokens in plan.remaining_tokens.items()
+        },
+        "tasks": records,
+    }
+    action = "validated" if args.dry_run else "split"
+    lines = [
+        f"Task #{args.task_id} {action} into {len(records)} child tasks",
+        f"Claude {plan.claude_tokens}/{plan.budgets.claude}, "
+        f"Codex {plan.codex_tokens}/{plan.budgets.codex}",
+    ]
+    lines.extend(
+        f"  {record['input_index']}: {record['assigned_agent']} "
+        f"{record['estimated_tokens']} tokens {record['title']}"
+        for record in records
+    )
+    return _json_or_text(payload, "\n".join(lines), args.json)
+
+
+def _workload_task_records(
+    plan: WorkloadPlan,
+    created: list[object],
+) -> list[dict[str, Any]]:
+    records = []
+    for index, assignment in enumerate(plan.assignments):
+        task = None if not created else created[index]
+        records.append(
+            {
+                "input_index": assignment.input_index,
+                "id": None if task is None else task.id,
+                "title": assignment.draft.title,
+                "requested_agent_policy": assignment.requested_policy.value,
+                "assigned_agent": assignment.assigned_agent.value,
+                "estimated_tokens": assignment.draft.estimated_tokens,
+                "dependency_ids": (
+                    list(assignment.draft.dependency_ids)
+                    if task is None
+                    else list(task.dependency_ids)
+                ),
+                "depends_on_indices": list(assignment.draft.depends_on_indices),
+            }
+        )
+    return records
 
 
 def _load_workload_batch(path: Path) -> WorkloadBatch:
@@ -425,6 +487,8 @@ def _task_record(task: object) -> dict[str, Any]:
         "last_error": task.last_error,
         "tags": list(task.tags),
         "dependency_ids": list(task.dependency_ids),
+        "split_parent_task_id": task.split_parent_task_id,
+        "split_child_ids": list(task.split_child_ids),
         "archived": bool(task.archived),
         "use_worktree": bool(task.use_worktree),
         "worktree_path": task.worktree_path,
@@ -562,15 +626,25 @@ def _duration_text(seconds: float) -> str:
 def _task_table(records: list[dict[str, Any]]) -> str:
     if not records:
         return "작업이 없습니다."
-    rows = ["ID  STATUS       AGENT   PRIORITY  REPEAT        TITLE"]
+    rows = ["ID  STATUS       AGENT   PRIORITY  REPEAT        SPLIT             TITLE"]
     rows.extend(
         f"{record['id']:<3} {record['status']:<12} "
         f"{(record['assigned_agent'] or record['agent_policy']):<7} "
         f"{record['priority']:<8}  {(record['recurrence'] or '-'):<12}  "
-        f"{record['title']}"
+        f"{_split_relation_text(record):<16}  {record['title']}"
         for record in records
     )
     return "\n".join(rows)
+
+
+def _split_relation_text(record: dict[str, Any]) -> str:
+    relations = []
+    if record["split_parent_task_id"] is not None:
+        relations.append(f"parent:#{record['split_parent_task_id']}")
+    if record["split_child_ids"]:
+        child_ids = ",".join(f"#{child_id}" for child_id in record["split_child_ids"])
+        relations.append(f"children:{child_ids}")
+    return ";".join(relations) or "-"
 
 
 def _task_details(record: dict[str, Any]) -> str:

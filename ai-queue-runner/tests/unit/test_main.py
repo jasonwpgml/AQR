@@ -3,7 +3,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 
-from ai_queue_runner.application.task_service import TaskService
+from ai_queue_runner.application.task_service import TaskDraft, TaskService
 from ai_queue_runner.config.loader import load_config
 from ai_queue_runner.domain.enums import AgentName, ErrorType, TaskStatus
 from ai_queue_runner.domain.models import TaskRun
@@ -455,6 +455,7 @@ def test_cli_plan_batch_distributes_and_atomically_enqueues_tasks(tmp_path, caps
                         "agent_policy": "any",
                         "estimated_tokens": 300,
                         "approval_mode": "auto",
+                        "depends_on_indices": [0],
                     },
                 ],
             }
@@ -479,6 +480,7 @@ def test_cli_plan_batch_distributes_and_atomically_enqueues_tasks(tmp_path, caps
     stored = service.list()
     assert [task.estimated_tokens for task in stored] == [700, 300]
     assert [task.agent_policy.value for task in stored] == ["claude", "codex"]
+    assert stored[1].dependency_ids == (stored[0].id,)
     engine.dispose()
 
 
@@ -519,6 +521,107 @@ def test_cli_plan_batch_dry_run_and_overflow_leave_database_empty(tmp_path, caps
     config = load_config(config_path)
     engine = create_db_engine(config.app.db_path)
     assert TaskService(make_session_factory(engine), config).list() == []
+    engine.dispose()
+
+
+def test_cli_split_task_dry_run_then_records_relations_and_rewires_dependencies(
+    tmp_path,
+    capsys,
+):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    original_id = add_waiting_task(
+        config_path,
+        allowed_root,
+        capsys,
+        title="large task",
+    )
+    dependent_id = add_waiting_task(
+        config_path,
+        allowed_root,
+        capsys,
+        title="dependent task",
+    )
+    config = load_config(config_path)
+    engine = create_db_engine(config.app.db_path)
+    service = TaskService(make_session_factory(engine), config)
+    dependent = service.get(dependent_id)
+    service.update(
+        dependent_id,
+        TaskDraft(
+            title=dependent.title,
+            prompt=dependent.prompt,
+            project_path=dependent.project_path,
+            dependency_ids=[original_id],
+        ),
+    )
+    engine.dispose()
+    project = allowed_root / "project"
+    plan_path = tmp_path / "split.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "budgets": {"claude": 1_000, "codex": 1_000},
+                "tasks": [
+                    {
+                        "title": "child one",
+                        "prompt": "first part",
+                        "project_path": str(project),
+                        "agent_policy": "claude",
+                        "estimated_tokens": 200,
+                    },
+                    {
+                        "title": "child two",
+                        "prompt": "second part",
+                        "project_path": str(project),
+                        "agent_policy": "codex",
+                        "estimated_tokens": 300,
+                        "depends_on_indices": [0],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(
+        cli_args(
+            config_path,
+            "split-task",
+            original_id,
+            plan_path,
+            "--dry-run",
+            "--json",
+        )
+    ) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["split"] is False
+    assert dry_run["original_task"]["status"] == "waiting"
+    assert [task["id"] for task in dry_run["tasks"]] == [None, None]
+
+    assert main(
+        cli_args(config_path, "split-task", original_id, plan_path, "--json")
+    ) == 0
+    split = json.loads(capsys.readouterr().out)
+    child_ids = [task["id"] for task in split["tasks"]]
+    assert split["split"] is True
+    assert split["original_task"]["status"] == "cancelled"
+    assert split["original_task"]["split_child_ids"] == child_ids
+    assert split["rewired_dependent_ids"] == [dependent_id]
+
+    assert main(cli_args(config_path, "show-task", child_ids[1], "--json")) == 0
+    shown_child = json.loads(capsys.readouterr().out)
+    assert shown_child["split_parent_task_id"] == original_id
+    assert shown_child["dependency_ids"] == [child_ids[0]]
+
+    assert main(cli_args(config_path, "list-tasks", "--json")) == 0
+    listed = json.loads(capsys.readouterr().out)
+    listed_original = next(task for task in listed if task["id"] == original_id)
+    assert listed_original["split_child_ids"] == child_ids
+
+    config = load_config(config_path)
+    engine = create_db_engine(config.app.db_path)
+    service = TaskService(make_session_factory(engine), config)
+    assert service.get(dependent_id).dependency_ids == tuple(child_ids)
     engine.dispose()
 
 

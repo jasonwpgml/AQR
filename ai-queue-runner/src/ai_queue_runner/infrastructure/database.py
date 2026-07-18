@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -105,11 +105,32 @@ def _migrate_v4_to_v5(session: Session) -> None:
         session.execute(text("ALTER TABLE task_runs ADD COLUMN worktree_branch TEXT"))
 
 
+def _migrate_v5_to_v6(session: Session) -> None:
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "split_parent_task_id" not in task_columns:
+        session.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN split_parent_task_id INTEGER "
+                "REFERENCES tasks(id) ON DELETE RESTRICT"
+            )
+        )
+    session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_tasks_split_parent_task_id "
+            "ON tasks(split_parent_task_id)"
+        )
+    )
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
     4: _migrate_v4_to_v5,
+    5: _migrate_v5_to_v6,
 }
 
 

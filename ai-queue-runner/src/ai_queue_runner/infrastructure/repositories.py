@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import case, select
+from sqlalchemy import case, select, update
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from ai_queue_runner.domain.clock import utcnow
@@ -72,11 +72,32 @@ class TaskRepository:
     def delete(self, task: Task) -> None:
         self._session.delete(task)
 
-    def set_status(self, task: Task, new_status: TaskStatus) -> None:
+    def set_status(
+        self,
+        task: Task,
+        new_status: TaskStatus,
+        *,
+        compare_and_swap: bool = False,
+    ) -> None:
         """The only sanctioned way to change a task's status."""
-        validate_transition(task.status, new_status)
-        task.status = new_status
-        task.updated_at = utcnow()
+        current_status = task.status
+        validate_transition(current_status, new_status)
+        updated_at = utcnow()
+        if not compare_and_swap:
+            task.status = new_status
+            task.updated_at = updated_at
+            return
+        changed = self._session.execute(
+            update(Task)
+            .where(Task.id == task.id, Task.status == current_status)
+            .values(status=new_status, updated_at=updated_at)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if changed != 1:
+            raise ValueError(
+                f"task {task.id} status changed while the operation was in progress"
+            )
+        self._session.refresh(task)
 
     def add_dependency(self, task: Task, depends_on: Task) -> None:
         if depends_on is task:

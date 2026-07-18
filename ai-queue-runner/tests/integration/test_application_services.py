@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from ai_queue_runner.application.agent_service import AgentService
+from ai_queue_runner.application.scheduler_service import reserve_next_task
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.clock import utcnow
@@ -19,7 +20,11 @@ from ai_queue_runner.infrastructure.database import (
     make_session_factory,
 )
 from ai_queue_runner.infrastructure.path_policy import PathPolicyError
-from ai_queue_runner.infrastructure.repositories import TaskRepository, TaskRunRepository
+from ai_queue_runner.infrastructure.repositories import (
+    AgentStateRepository,
+    TaskRepository,
+    TaskRunRepository,
+)
 
 
 @pytest.fixture()
@@ -129,6 +134,161 @@ def test_create_batch_persists_estimates_in_one_transaction(
         )
 
     assert [task.title for task in tasks.list()] == ["first", "second"]
+
+
+def test_create_batch_resolves_sibling_dependencies_and_scheduler_honors_order(
+    application,
+) -> None:
+    tasks, _agents, factory, project = application
+    external = tasks.create(draft(project, title="existing prerequisite"))
+    with factory() as session:
+        repo = TaskRepository(session)
+        stored_external = repo.get(external.id)
+        repo.set_status(stored_external, TaskStatus.RESERVED)
+        repo.set_status(stored_external, TaskStatus.RUNNING)
+        repo.set_status(stored_external, TaskStatus.SUCCEEDED)
+        session.commit()
+    created = tasks.create_batch(
+        [
+            draft(project, title="first", agent_policy="claude", priority=1),
+            draft(
+                project,
+                title="second",
+                agent_policy="claude",
+                priority=100,
+                dependency_ids=[external.id],
+                depends_on_indices=[0],
+            ),
+        ]
+    )
+
+    assert created[0].dependency_ids == ()
+    assert created[1].dependency_ids == tuple(sorted((external.id, created[0].id)))
+
+    with factory() as session:
+        state = AgentStateRepository(session).get_or_create(AgentName.CLAUDE)
+        state.status = AgentStatus.AVAILABLE
+        session.commit()
+        first = reserve_next_task(session, AppConfig(), AgentName.CLAUDE)
+        assert first is not None and first.id == created[0].id
+        repo = TaskRepository(session)
+        repo.set_status(first, TaskStatus.RUNNING)
+        repo.set_status(first, TaskStatus.SUCCEEDED)
+        session.refresh(state)
+        state.current_task_id = None
+        session.commit()
+
+        second = reserve_next_task(session, AppConfig(), AgentName.CLAUDE)
+        assert second is not None and second.id == created[1].id
+
+
+def test_split_task_rewires_dependents_to_all_children(application) -> None:
+    tasks, _agents, factory, project = application
+    original = tasks.create(draft(project, title="large task"))
+    dependent = tasks.create(
+        draft(project, title="after split", dependency_ids=[original.id])
+    )
+
+    split = tasks.split_task(
+        original.id,
+        [
+            draft(project, title="child one", estimated_tokens=100),
+            draft(
+                project,
+                title="child two",
+                estimated_tokens=100,
+                depends_on_indices=[0],
+            ),
+        ],
+    )
+
+    child_ids = tuple(child.id for child in split.children)
+    assert split.original.status is TaskStatus.CANCELLED
+    assert split.original.split_child_ids == child_ids
+    assert split.rewired_dependent_ids == (dependent.id,)
+    assert [child.split_parent_task_id for child in split.children] == [
+        original.id,
+        original.id,
+    ]
+    assert split.children[1].dependency_ids == (split.children[0].id,)
+    assert tasks.get(dependent.id).dependency_ids == child_ids
+
+    with factory() as session:
+        state = AgentStateRepository(session).get_or_create(AgentName.CLAUDE)
+        state.status = AgentStatus.AVAILABLE
+        session.commit()
+        repo = TaskRepository(session)
+        first = reserve_next_task(session, AppConfig(), AgentName.CLAUDE)
+        assert first is not None and first.id == child_ids[0]
+        repo.set_status(first, TaskStatus.RUNNING)
+        repo.set_status(first, TaskStatus.SUCCEEDED)
+        session.refresh(state)
+        state.current_task_id = None
+        session.commit()
+
+        second = reserve_next_task(session, AppConfig(), AgentName.CLAUDE)
+        assert second is not None and second.id == child_ids[1]
+        repo.set_status(second, TaskStatus.RUNNING)
+        repo.set_status(second, TaskStatus.SUCCEEDED)
+        session.refresh(state)
+        state.current_task_id = None
+        session.commit()
+
+        after_split = reserve_next_task(session, AppConfig(), AgentName.CLAUDE)
+        assert after_split is not None and after_split.id == dependent.id
+
+
+def test_split_task_rolls_back_original_and_children_on_mid_batch_failure(
+    application,
+    monkeypatch,
+) -> None:
+    tasks, _agents, _factory, project = application
+    original = tasks.create(draft(project, title="large task"))
+    dependent = tasks.create(
+        draft(project, title="dependent", dependency_ids=[original.id])
+    )
+    original_add = TaskRepository.add
+    calls = 0
+
+    def fail_on_second_add(repo, task):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated child insert failure")
+        return original_add(repo, task)
+
+    monkeypatch.setattr(TaskRepository, "add", fail_on_second_add)
+    with pytest.raises(RuntimeError, match="child insert failure"):
+        tasks.split_task(
+            original.id,
+            [
+                draft(project, title="rolled back child one"),
+                draft(project, title="rolled back child two"),
+            ],
+        )
+
+    restored = tasks.get(original.id)
+    assert restored.status is TaskStatus.WAITING
+    assert restored.finished_at is None
+    assert restored.split_child_ids == ()
+    assert tasks.get(dependent.id).dependency_ids == (original.id,)
+    assert [task.title for task in tasks.list()] == ["large task", "dependent"]
+
+
+def test_split_task_rejects_running_original(application) -> None:
+    tasks, _agents, factory, project = application
+    original = tasks.create(draft(project, title="running task"))
+    with factory() as session:
+        repo = TaskRepository(session)
+        stored = repo.get(original.id)
+        repo.set_status(stored, TaskStatus.RESERVED)
+        repo.set_status(stored, TaskStatus.RUNNING)
+        session.commit()
+
+    with pytest.raises(ValueError, match="can be split"):
+        tasks.split_task(original.id, [draft(project, title="child")])
+
+    assert tasks.get(original.id).status is TaskStatus.RUNNING
 
 
 def test_activity_between_returns_tasks_with_events_inside_range(application) -> None:

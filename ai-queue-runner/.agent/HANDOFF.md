@@ -1,6 +1,6 @@
 FROM: codex
 TO: claude
-TASK: T032
+TASK: T033
 STATUS: completed
 
 CHANGED:
@@ -14,29 +14,33 @@ CHANGED:
 - docs/ARCHITECTURE.md
 - src/ai_queue_runner/application/cli_service.py
 - src/ai_queue_runner/application/task_service.py
+- src/ai_queue_runner/application/workload_planning.py
+- src/ai_queue_runner/domain/models.py
+- src/ai_queue_runner/infrastructure/database.py
 - src/ai_queue_runner/infrastructure/repositories.py
 - src/ai_queue_runner/main.py
-- src/ai_queue_runner/ui/calendar_view.py
 - tests/integration/test_application_services.py
+- tests/integration/test_repositories.py
 - tests/unit/test_main.py
-- tests/unit/test_ui.py
+- tests/unit/test_workload_planning.py
 
 VERIFIED:
-- `..\.venv\Scripts\python -m pytest -q tests\integration\test_application_services.py tests\unit\test_main.py tests\unit\test_ui.py` -> 80 passed in 6.13s
-- `..\.venv\Scripts\python -m pytest -q` -> 288 passed in 24.06s
+- `..\.venv\Scripts\python -m pytest -q` -> 297 passed in 23.17s
 - `..\.venv\Scripts\python -m ruff check src tests` -> All checks passed!
+- targeted service/CLI/migration/planning suite -> 68 passed in 6.41s
+- `..\.venv\Scripts\python -m ai_queue_runner --help` -> `split-task` listed
 - `git diff --check` -> no whitespace errors (Git emitted only existing LF/CRLF conversion warnings)
-- `..\.venv\Scripts\python -m ai_queue_runner --help` -> `daily-summary` listed
 
 NOTES:
-- `TaskRepository.list_terminal_activity_between()` and `TaskRunRepository.list_finished_between()` own the range queries; `TaskService.daily_summary()` aggregates their rows into immutable project and total DTOs.
-- A selected local date becomes a half-open `[local midnight, next local midnight)` interval, then both boundaries are converted to naive UTC. Completed runs and terminal tasks are attributed by their finish time; blocked tasks use `updated_at` because user-rejected reservations have no `finished_at`.
-- Project summaries include succeeded/failed/blocked/cancelled counts, completed-run duration, per-agent run counts, fallback count, unique recorded worktree branches, and failed-task ID/title/latest error type. Totals add usage-limit occurrence flags per agent.
-- `daily-summary [--date YYYY-MM-DD] [--json]` supports an empty successful result and defaults to the current local date. `docs/AI_GUIDE.md` documents the complete JSON contract.
-- The calendar tab adds one `이 날짜 요약` button backed by the same application service. No tab or persistent UI state was added.
-- DB schema remains v5; no columns or migrations were added. The implemented plan §20 bullet was removed.
+- `depends_on_indices` is validated as a zero-based sibling DAG before persistence. After every child receives an ID, sibling references and existing `dependency_ids` are stored together as ordinary `task_dependencies` rows in one transaction.
+- Schema v6 adds indexed `tasks.split_parent_task_id`; `TaskView` and CLI records expose `split_parent_task_id` plus `split_child_ids`, and text `list-tasks` shows the same relation.
+- `split-task ID plan.json` uses the existing token plan contract. It accepts only waiting/retry_wait/blocked originals, CAS-cancels the original, inserts children and relations, and rewires every direct dependent from the original to all children before one commit.
+- Downstream tasks therefore require every child to succeed. A failed, cancelled, or incomplete child intentionally keeps downstream work ineligible until the queue is manually corrected.
+- `--dry-run` performs token, path, existing dependency, sibling DAG, original status, and split-cycle checks without changing the database.
+- The CAS cancellation is the transaction's first write. A later child insert or rewiring failure rolls back the original status, children, split relations, and dependency changes together.
+- AQR does not call an LLM; Claude/Codex supplies the split plan JSON.
 
 RISKS:
-- The existing schema records runs but not a full task-status event log. If a failed/blocked task is later retried or cancelled, its earlier status cannot be reconstructed; summaries intentionally report the task's current terminal outcome for the selected date.
-- A run crossing local midnight contributes its full duration to the date on which it finishes, matching result-oriented morning reporting rather than wall-clock utilization per day.
-- Worktree branch lists can only include branch values persisted on the task or completed task-run rows; branch creation attempts that never persisted either value are not recoverable.
+- Split parents cannot be deleted through `TaskService.delete()` while child relation rows exist, preserving relationship visibility. Delete children first if permanent history removal is intended.
+- The dependency policy intentionally does not auto-cancel or auto-retry downstream work when a child fails; operators must resolve the child outcome explicitly.
+- `.agent/TASK_T033.md` and `.agent/TASK_T034.md` are untracked user/task files and were left untouched.
