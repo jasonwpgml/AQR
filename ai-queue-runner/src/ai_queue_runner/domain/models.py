@@ -102,6 +102,9 @@ class Task(Base):
     recurrence_source_task_id: Mapped[int | None] = mapped_column(
         ForeignKey("tasks.id", ondelete="SET NULL"), default=None
     )
+    split_parent_task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="RESTRICT"), index=True, default=None
+    )
     not_before: Mapped[datetime | None] = mapped_column(default=None)
     reserved_at: Mapped[datetime | None] = mapped_column(default=None)
     started_at: Mapped[datetime | None] = mapped_column(default=None)
@@ -119,6 +122,18 @@ class Task(Base):
         primaryjoin=id == TaskDependency.task_id,
         secondaryjoin=id == TaskDependency.depends_on_task_id,
         backref="dependents",
+    )
+    split_parent: Mapped[Task | None] = relationship(
+        "Task",
+        foreign_keys=[split_parent_task_id],
+        remote_side=[id],
+        back_populates="split_children",
+    )
+    split_children: Mapped[list[Task]] = relationship(
+        "Task",
+        foreign_keys=[split_parent_task_id],
+        back_populates="split_parent",
+        order_by="Task.id",
     )
     runs: Mapped[list[TaskRun]] = relationship(back_populates="task")
 

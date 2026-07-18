@@ -17,6 +17,8 @@ def planned_task(
     title: str,
     estimated_tokens: int,
     agent_policy: AgentPolicy = AgentPolicy.ANY,
+    *,
+    depends_on_indices: list[int] | None = None,
 ) -> TaskDraft:
     return TaskDraft(
         title=title,
@@ -24,6 +26,7 @@ def planned_task(
         project_path=project,
         agent_policy=agent_policy,
         estimated_tokens=estimated_tokens,
+        depends_on_indices=depends_on_indices or [],
     )
 
 
@@ -94,3 +97,33 @@ def test_plan_workload_rejects_dedicated_task_over_its_agent_budget(
 
     with pytest.raises(ValueError, match="claude-only.*claude token budget"):
         plan_workload(batch)
+
+
+@pytest.mark.parametrize(
+    ("dependencies", "message"),
+    [
+        (([2], []), "out of range"),
+        (([0],), "cannot depend on itself"),
+        (([1], [0]), "cannot contain a cycle"),
+    ],
+)
+def test_workload_batch_rejects_invalid_sibling_dependencies(
+    tmp_path: Path,
+    dependencies: tuple[list[int], ...],
+    message: str,
+) -> None:
+    tasks = [
+        planned_task(
+            tmp_path,
+            f"task-{index}",
+            10,
+            depends_on_indices=dependency_indices,
+        )
+        for index, dependency_indices in enumerate(dependencies)
+    ]
+
+    with pytest.raises(ValidationError, match=message):
+        WorkloadBatch(
+            budgets=TokenBudgets(claude=100, codex=100),
+            tasks=tasks,
+        )

@@ -242,6 +242,18 @@ def main(argv: list[str] | None = None) -> int:
         help="show deterministic assignments without creating tasks",
     )
     _add_subcommand_json_option(plan_batch)
+    split_task = subcommands.add_parser(
+        "split-task",
+        help="replace a queued task with an atomic dependent child batch",
+    )
+    split_task.add_argument("task_id", type=int, metavar="ID")
+    split_task.add_argument("plan_path", type=Path, metavar="PATH")
+    split_task.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate and show the split without changing the queue",
+    )
+    _add_subcommand_json_option(split_task)
     cleanup_worktree = subcommands.add_parser(
         "cleanup-worktree",
         help="remove a completed task worktree after verifying all changes are merged",

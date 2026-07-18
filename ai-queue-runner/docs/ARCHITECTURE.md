@@ -13,7 +13,7 @@ flowchart TB
     end
 
     subgraph APP["application/ · 유스케이스"]
-        TASK[TaskService\nCRUD·맨 위·보관·일일 집계]
+        TASK[TaskService\nCRUD·원자적 배치·작업 분할·일일 집계]
         PLAN[WorkloadPlanning\n토큰 예산·결정적 분배]
         AGENT[AgentService]
         RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
@@ -86,6 +86,7 @@ erDiagram
         int retry_count
         int recurrence_interval_days
         int recurrence_source_task_id FK,UK
+        int split_parent_task_id FK
         datetime not_before
         datetime reserved_at
         datetime created_at
@@ -128,6 +129,7 @@ erDiagram
     tasks ||--o{ task_dependencies : "선행 작업"
     tasks ||--o{ task_runs : "실행 기록"
     tasks o|--o| tasks : "다음 반복 회차"
+    tasks o|--o{ tasks : "분할 원본과 하위 작업"
     tasks |o--o| agent_states : "현재 예약/실행"
 ```
 
@@ -141,6 +143,9 @@ DB 시간은 SQLite의 제약 때문에 naive UTC로 저장하고 UI 경계에�
 스키마 v5는 `tasks`에 격리 실행 여부·경로·브랜치를, `task_runs`에 실제 실행 당시의
 worktree 경로·브랜치를 추가합니다. 작업 행은 현재/재시도 위치를, 실행 행은 삭제 후에도
 남는 이력을 제공하며 자동 머지 상태는 저장하거나 추론하지 않습니다.
+스키마 v6는 `tasks.split_parent_task_id` 자기 참조 외래 키와 인덱스를 추가합니다. 하위
+작업은 원본 ID를 하나 보존하고 원본은 역관계로 모든 하위 ID를 조회합니다. 분할 시 기존
+`task_dependencies`만 사용해 형제 순서와 후속 작업의 전체 하위 작업 대기를 표현합니다.
 
 ## 3. 작업 상태 전이
 
@@ -239,7 +244,11 @@ flowchart TD
 - 복구 종료 직전에도 예상 생성 시각을 다시 비교해 PID 검증과 종료 사이의 재사용을 막습니다.
 - Claude의 구조화 `rate_limit_event`는 `rate_limit_info.status=allowed`이면 정상으로 처리하고, 일반 제한 문자열은 비정상 종료에서만 보조 분류합니다.
 - `plan-batch`는 전용 작업을 먼저 예산에 반영하고 큰 `any` 작업부터 예상 사용률이 낮은 에이전트에 결정적으로 배치합니다.
-- 계획된 작업은 결정된 전용 정책으로 바꾼 뒤 `TaskService.create_batch()`의 단일 트랜잭션으로 저장합니다.
+- 계획된 작업은 결정된 전용 정책으로 바꾼 뒤 `depends_on_indices`를 생성된 실제 ID로
+  해석해 `TaskService.create_batch()`의 단일 트랜잭션으로 저장합니다.
+- `split-task`는 원본의 현재 큐 상태를 CAS 취소해 스케줄러 예약과 경합하지 않습니다.
+  하위 작업·형제 의존·분할 관계를 등록하고, 원본의 직접 후속 작업이 하위 작업 전체를
+  기다리도록 재배선한 뒤 한 번만 커밋합니다. 실패하면 원본 취소까지 롤백합니다.
 - `cleanup-worktree ID`는 종료 상태 작업만 받으며 dirty 파일이나 프로젝트 HEAD에 포함되지 않은 브랜치 커밋이 있으면 삭제를 거부합니다. 통과해도 worktree만 제거하고 브랜치와 실행 이력은 남깁니다.
 
 ## 6. 주요 파일
@@ -247,8 +256,8 @@ flowchart TD
 | 경로 | 역할 |
 |---|---|
 | `application/runtime.py` | APScheduler 틱, asyncio 실행 루프, 승인·거절·중단 |
-| `application/task_service.py` | 작업 CRUD·복제·재시도·맨 위 이동·완료 보관·의존성 검증·프로젝트별 일일 집계 |
-| `application/workload_planning.py` | 명시적 토큰 예산 검증·결정적 Claude/Codex 분배 |
+| `application/task_service.py` | 작업 CRUD·원자적 배치/분할·의존 승계·복제·재시도·완료 보관·프로젝트별 일일 집계 |
+| `application/workload_planning.py` | 명시적 토큰 예산·형제 의존 DAG 검증·결정적 Claude/Codex 분배 |
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |
 | `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback 결정·이력 기록 |

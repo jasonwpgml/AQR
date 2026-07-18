@@ -35,10 +35,11 @@
 |---|---|---|
 | `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
 | `list-tasks` | 목록 조회 | `--status {waiting,reserved,running,succeeded,failed,retry_wait,blocked,cancelled,archived}` |
-| `show-task ID` | 상세 + 최근 5회 실행 | `recurrence`, `recurrence_interval_days`, `recurrence_source_task_id`로 반복 체인 확인 |
+| `show-task ID` | 상세 + 최근 5회 실행 | 반복 체인과 `split_parent_task_id`, `split_child_ids` 분할 관계 확인 |
 | `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run` |
 | `daily-summary` | 로컬 날짜의 프로젝트별 종료 활동 요약 | `--date YYYY-MM-DD`(생략 시 오늘), 완료·실패·차단·취소·실행·fallback·worktree·사용량 제한 |
 | `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
+| `split-task ID PATH` | 대기 작업을 같은 JSON 계약의 하위 작업 배치로 원자적 교체 | JSON 파일, `--dry-run` |
 | `cleanup-worktree ID` | 병합 완료된 종료 작업의 worktree 제거 | dirty/미병합 커밋이면 거부, 브랜치는 유지 |
 | `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`, `--repeat`, `--clear-repeat`, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
 | `retry-task ID` | 실패(failed)/차단(blocked) 작업 재대기 | 재시도 횟수·오류 초기화 |
@@ -129,6 +130,15 @@ false로 채워집니다. 현재 스키마에는 상태 전이 이력 테이블�
       "agent_policy": "any",
       "estimated_tokens": 25000,
       "approval_mode": "auto"
+    },
+    {
+      "title": "검토 결과 반영",
+      "prompt": "설계 검토 결과를 코드에 반영하세요.",
+      "project_path": "C:/projects/sample",
+      "agent_policy": "codex",
+      "estimated_tokens": 40000,
+      "dependency_ids": [12],
+      "depends_on_indices": [0]
     }
   ]
 }
@@ -139,12 +149,46 @@ false로 채워집니다. 현재 스키마에는 상태 전이 이력 테이블�
 - 같은 사용률이면 Claude, 같은 크기면 JSON에서 먼저 나온 작업이 우선한다.
 - 결과 작업은 `any`가 아니라 결정된 `claude`/`codex` 정책으로 저장된다.
 - `--dry-run`은 DB를 변경하지 않는다. 실제 등록은 전체 배치를 한 번만 커밋한다.
-- 배치 내부 작업은 아직 서로를 참조할 ID가 없으므로 `dependency_ids`에는 기존 작업 ID만 쓴다.
+- `dependency_ids`는 등록 전에 이미 DB에 존재하는 작업 ID 배열이다.
+- `depends_on_indices`는 같은 JSON의 `tasks` 배열을 가리키는 선택적 0-기반 인덱스 배열이다.
+  두 필드는 함께 사용할 수 있고, 저장할 때 모두 실제 `task_dependencies` 행으로 합쳐진다.
+- `depends_on_indices`의 중복·음수·자기 참조·범위 밖 참조·순환은 작업을 하나도
+  등록하기 전에 거부된다.
 
 ```powershell
 ... plan-batch workload.json --dry-run --json
 ... plan-batch workload.json --json
 ```
+
+## 작업 자동 분할
+
+분할 판단과 JSON 작성은 큐를 조작하는 Claude/Codex가 담당하며 AQR은 LLM을 호출하지
+않는다. `split-task ID PATH`는 `plan-batch`와 동일한 JSON 계약과 토큰 분배 규칙을 사용해
+원본 작업을 하위 작업 배치로 교체한다.
+
+```powershell
+# 상태·경로·예산·기존/형제 의존을 검증하되 DB는 변경하지 않음
+... split-task 42 split-plan.json --dry-run --json
+
+# 원본 취소, 하위 작업 등록, 관계 기록, 의존 승계를 한 번만 커밋
+... split-task 42 split-plan.json --json
+```
+
+- 원본은 `waiting`, `retry_wait`, `blocked`일 때만 분할할 수 있다. `reserved`, `running`과
+  성공·실패·취소된 종료 작업은 거부한다.
+- 실행하면 원본은 `cancelled`가 되고 각 하위 작업의 `split_parent_task_id`와 원본의
+  `split_child_ids`에 관계가 남는다. `list-tasks`와 `show-task`의 텍스트/JSON에서 확인한다.
+- 원본을 직접 기다리던 모든 작업은 원본 의존 대신 생성된 하위 작업 전체를 의존한다.
+  따라서 스케줄러는 모든 하위 작업이 `succeeded`가 된 뒤에만 그 작업을 실행한다. 하나라도
+  미완료·실패·취소 상태이면 후속 작업은 계속 대기한다.
+- 하위 작업이 기존 후속 작업을 다시 의존해 승계 후 순환이 생기는 계획도 거부한다.
+- 원본 상태 CAS 취소, 하위 작업과 형제 의존 등록, 원본↔하위 관계 저장, 후속 작업 의존
+  재배선은 한 DB 트랜잭션이다. 어느 단계든 실패하면 원본 상태를 포함해 모두 롤백한다.
+
+JSON 결과의 `split`은 실제 변경 여부, `original_task`는 원본의 전체 조회 레코드,
+`rewired_dependent_ids`는 의존을 승계한 후속 작업 ID, `tasks`는 입력 인덱스·생성 ID·결정된
+에이전트·`dependency_ids`·`depends_on_indices`를 담는다. dry-run에서는 `split=false`이고
+하위 작업 ID가 `null`이다.
 
 ## 반복 작업
 

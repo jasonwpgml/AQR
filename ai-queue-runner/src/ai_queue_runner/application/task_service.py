@@ -51,6 +51,7 @@ class TaskDraft(BaseModel):
     not_before: datetime | None = None
     tags: list[str] = Field(default_factory=list)
     dependency_ids: list[int] = Field(default_factory=list)
+    depends_on_indices: list[int] = Field(default_factory=list)
 
     @field_validator("not_before")
     @classmethod
@@ -66,6 +67,15 @@ class TaskDraft(BaseModel):
             raise ValueError("dependency IDs must be positive")
         if len(set(value)) != len(value):
             raise ValueError("dependency IDs must be unique")
+        return value
+
+    @field_validator("depends_on_indices")
+    @classmethod
+    def _unique_dependency_indices(cls, value: list[int]) -> list[int]:
+        if any(index < 0 for index in value):
+            raise ValueError("sibling dependency indices must be non-negative")
+        if len(set(value)) != len(value):
+            raise ValueError("sibling dependency indices must be unique")
         return value
 
     @field_validator("tags")
@@ -102,11 +112,20 @@ class TaskView:
     last_error: str | None
     tags: tuple[str, ...]
     dependency_ids: tuple[int, ...]
+    split_parent_task_id: int | None
+    split_child_ids: tuple[int, ...]
     archived: bool
     use_worktree: bool
     worktree_path: str | None
     worktree_branch: str | None
     estimated_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class TaskSplitView:
+    original: TaskView
+    children: tuple[TaskView, ...]
+    rewired_dependent_ids: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -335,28 +354,101 @@ class TaskService:
     def create(self, draft: TaskDraft) -> TaskView:
         return self.create_batch([draft])[0]
 
+    def validate_batch(self, drafts: list[TaskDraft]) -> None:
+        """Validate a complete batch without changing the queue."""
+        if not drafts:
+            return
+        validate_sibling_dependency_indices(drafts)
+        for draft in drafts:
+            self._canonical_project_path(draft.project_path)
+        with self._session_factory() as session:
+            repo = TaskRepository(session)
+            self._load_batch_dependencies(repo, drafts)
+
     def create_batch(self, drafts: list[TaskDraft]) -> list[TaskView]:
         """Create every draft in one transaction or leave the queue unchanged."""
         if not drafts:
             return []
+        validate_sibling_dependency_indices(drafts)
         canonical_paths = [
             self._canonical_project_path(draft.project_path) for draft in drafts
         ]
         with self._session_factory() as session:
             repo = TaskRepository(session)
-            tasks = []
-            for draft, canonical_path in zip(drafts, canonical_paths, strict=True):
-                dependencies = self._load_dependencies(repo, draft.dependency_ids)
-                tasks.append(
-                    repo.add(
-                        Task(
-                            **_task_values(draft, canonical_path),
-                            depends_on=dependencies,
-                        )
-                    )
-                )
+            dependencies = self._load_batch_dependencies(repo, drafts)
+            tasks = self._add_batch(repo, drafts, canonical_paths, dependencies)
             session.commit()
             return [_to_task_view(task) for task in tasks]
+
+    def split_task(
+        self,
+        task_id: int,
+        drafts: list[TaskDraft],
+        *,
+        dry_run: bool = False,
+    ) -> TaskSplitView:
+        """Replace one queued task with a dependent child batch in one transaction."""
+        if not drafts:
+            raise ValueError("a split requires at least one child task")
+        validate_sibling_dependency_indices(drafts)
+        canonical_paths = [
+            self._canonical_project_path(draft.project_path) for draft in drafts
+        ]
+        with self._session_factory() as session:
+            repo = TaskRepository(session)
+            original = self._require_task(repo, task_id)
+            if original.status not in {
+                TaskStatus.WAITING,
+                TaskStatus.RETRY_WAIT,
+                TaskStatus.BLOCKED,
+            }:
+                raise ValueError(
+                    "only waiting, retry-wait, or blocked tasks can be split"
+                )
+            dependencies = self._load_batch_dependencies(repo, drafts)
+            for child_dependencies in dependencies:
+                if any(
+                    dependency.id == original.id
+                    or _depends_on(dependency, original.id)
+                    for dependency in child_dependencies
+                ):
+                    raise ValueError(
+                        "split child dependencies cannot create a cycle through "
+                        f"original task {original.id}"
+                    )
+            if dry_run:
+                dependent_ids = tuple(
+                    task.id for task in sorted(original.dependents, key=lambda task: task.id)
+                )
+                return TaskSplitView(
+                    original=_to_task_view(original),
+                    children=(),
+                    rewired_dependent_ids=dependent_ids,
+                )
+
+            # AIDEV-NOTE: claim cancellation before inserting children so a scheduler
+            # reservation cannot race the split; every later write shares this transaction.
+            repo.set_status(original, TaskStatus.CANCELLED, compare_and_swap=True)
+            dependents = sorted(original.dependents, key=lambda task: task.id)
+            dependent_ids = tuple(task.id for task in dependents)
+            original.finished_at = utcnow()
+            children = self._add_batch(
+                repo,
+                drafts,
+                canonical_paths,
+                dependencies,
+                split_parent_task_id=original.id,
+            )
+            for dependent in dependents:
+                dependent.depends_on.remove(original)
+                for child in children:
+                    repo.add_dependency(dependent, child)
+            session.commit()
+            return TaskSplitView(
+                original=_to_task_view(original),
+                children=tuple(_to_task_view(child) for child in children),
+                rewired_dependent_ids=dependent_ids,
+            )
 
     def update(self, task_id: int, draft: TaskDraft) -> TaskView:
         canonical_path = self._canonical_project_path(draft.project_path)
@@ -484,6 +576,12 @@ class TaskService:
             if dependent_ids:
                 joined_ids = ", ".join(str(dependent_id) for dependent_id in dependent_ids)
                 raise ValueError(f"task {task_id} is required by dependent tasks: {joined_ids}")
+            split_child_ids = [child.id for child in task.split_children]
+            if split_child_ids:
+                joined_ids = ", ".join(str(child_id) for child_id in split_child_ids)
+                raise ValueError(
+                    f"task {task_id} is the split parent of child tasks: {joined_ids}"
+                )
             session.execute(sql_delete(TaskRun).where(TaskRun.task_id == task_id))
             repo.delete(task)
             session.commit()
@@ -516,6 +614,74 @@ class TaskService:
                 raise ValueError(f"dependency task {dependency_id} not found")
             dependencies.append(dependency)
         return dependencies
+
+    @classmethod
+    def _load_batch_dependencies(
+        cls,
+        repo: TaskRepository,
+        drafts: list[TaskDraft],
+    ) -> list[list[Task]]:
+        return [cls._load_dependencies(repo, draft.dependency_ids) for draft in drafts]
+
+    @staticmethod
+    def _add_batch(
+        repo: TaskRepository,
+        drafts: list[TaskDraft],
+        canonical_paths: list[Path],
+        dependencies: list[list[Task]],
+        *,
+        split_parent_task_id: int | None = None,
+    ) -> list[Task]:
+        tasks = [
+            repo.add(
+                Task(
+                    **_task_values(draft, canonical_path),
+                    depends_on=child_dependencies,
+                    split_parent_task_id=split_parent_task_id,
+                )
+            )
+            for draft, canonical_path, child_dependencies in zip(
+                drafts,
+                canonical_paths,
+                dependencies,
+                strict=True,
+            )
+        ]
+        for task, draft in zip(tasks, drafts, strict=True):
+            for dependency_index in draft.depends_on_indices:
+                repo.add_dependency(task, tasks[dependency_index])
+        return tasks
+
+
+def validate_sibling_dependency_indices(drafts: list[TaskDraft]) -> None:
+    """Reject invalid sibling references and cycles before any task is inserted."""
+    task_count = len(drafts)
+    for task_index, draft in enumerate(drafts):
+        for dependency_index in draft.depends_on_indices:
+            if dependency_index >= task_count:
+                raise ValueError(
+                    f"depends_on_indices index {dependency_index} is out of range "
+                    f"for {task_count} tasks"
+                )
+            if dependency_index == task_index:
+                raise ValueError(f"task index {task_index} cannot depend on itself")
+
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(task_index: int) -> None:
+        if task_index in visiting:
+            raise ValueError("depends_on_indices cannot contain a cycle")
+        if task_index in visited:
+            return
+        visiting.add(task_index)
+        for dependency_index in drafts[task_index].depends_on_indices:
+            visit(dependency_index)
+        visiting.remove(task_index)
+        visited.add(task_index)
+
+    for task_index in range(task_count):
+        visit(task_index)
 
 
 def _task_values(draft: TaskDraft, canonical_path: Path) -> dict[str, object]:
@@ -570,7 +736,9 @@ def _to_task_view(task: Task) -> TaskView:
         updated_at=task.updated_at,
         last_error=task.last_error,
         tags=tuple(tag for tag in task.tags if tag != _ARCHIVED_TAG),
-        dependency_ids=tuple(dependency.id for dependency in task.depends_on),
+        dependency_ids=tuple(sorted(dependency.id for dependency in task.depends_on)),
+        split_parent_task_id=task.split_parent_task_id,
+        split_child_ids=tuple(child.id for child in task.split_children),
         archived=_is_archived(task),
         use_worktree=task.use_worktree,
         worktree_path=task.worktree_path,

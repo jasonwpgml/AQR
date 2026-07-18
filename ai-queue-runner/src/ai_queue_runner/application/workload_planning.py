@@ -7,7 +7,10 @@ from fractions import Fraction
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ai_queue_runner.application.task_service import TaskDraft
+from ai_queue_runner.application.task_service import (
+    TaskDraft,
+    validate_sibling_dependency_indices,
+)
 from ai_queue_runner.domain.enums import AgentName, AgentPolicy
 
 
@@ -35,6 +38,7 @@ class WorkloadBatch(BaseModel):
                 "estimated_tokens must be positive for every planned task: "
                 + ", ".join(missing)
             )
+        validate_sibling_dependency_indices(self.tasks)
         return self
 
 
