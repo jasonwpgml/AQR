@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from ai_queue_runner.application.task_service import TaskDraft
 from ai_queue_runner.config.defaults import AppConfig
-from ai_queue_runner.domain.enums import AgentPolicy, ApprovalMode
+from ai_queue_runner.domain.enums import AgentPolicy, ApprovalMode, TaskCreator
 from ai_queue_runner.ui.task_table import enum_value
 
 EMPTY_ROOTS_MESSAGE = "설정에서 허용 프로젝트 루트를 먼저 추가하세요."
@@ -70,6 +70,8 @@ class TaskDialog(QDialog):
         self._task = task
         self._config = config
         self._selected_project_path: Path | None = None
+        self._created_by: TaskCreator | None = None
+        self._creator_session_id: str | None = None
         self._prompt_template_service = prompt_template_service
         self._templates_by_name: dict[str, object] = {}
         self._selected_template_name: str | None = None
@@ -148,6 +150,11 @@ class TaskDialog(QDialog):
         self.approval_combo.addItem("승인 후 실행", ApprovalMode.CONFIRM)
         self.approval_combo.addItem("자동 실행", ApprovalMode.AUTO)
 
+        self.auto_commit_check = QCheckBox("성공 후 자동 Git 커밋")
+        self.auto_commit_check.setToolTip(
+            "scheduler.auto_commit_enabled 설정도 켜져 있어야 실행됩니다."
+        )
+
         self.max_retries_spin = QSpinBox()
         self.max_retries_spin.setRange(0, 20)
         self.max_retries_spin.setValue(2)
@@ -204,6 +211,7 @@ class TaskDialog(QDialog):
         form.addRow("우선순위", self.priority_spin)
         form.addRow("예상 토큰", self.estimated_tokens_spin)
         form.addRow("실행 방식", self.approval_combo)
+        form.addRow("Git", self.auto_commit_check)
         form.addRow("최대 재시도", self.max_retries_spin)
         form.addRow("재시도 간격", self.retry_delay_spin)
         form.addRow("반복", recurrence_row)
@@ -351,6 +359,10 @@ class TaskDialog(QDialog):
             item.setCheckState(Qt.CheckState.Unchecked)
 
     def _load_task(self, task: object) -> None:
+        self._created_by = TaskCreator(
+            enum_value(getattr(task, "created_by", TaskCreator.USER))
+        )
+        self._creator_session_id = getattr(task, "creator_session_id", None)
         self.title_edit.setText(str(getattr(task, "title", "")))
         self.prompt_edit.setPlainText(str(getattr(task, "prompt", "")))
         self._refresh_project_roots(str(getattr(task, "project_path", "")))
@@ -361,6 +373,7 @@ class TaskDialog(QDialog):
             self.approval_combo,
             enum_value(getattr(task, "approval_mode", ApprovalMode.CONFIRM)),
         )
+        self.auto_commit_check.setChecked(bool(getattr(task, "auto_commit", False)))
         self.max_retries_spin.setValue(int(getattr(task, "max_retries", 2)))
         self.retry_delay_spin.setValue(int(getattr(task, "retry_delay_minutes", 10)))
         recurrence_interval_days = getattr(task, "recurrence_interval_days", None)
@@ -566,10 +579,13 @@ class TaskDialog(QDialog):
             title=title,
             prompt=prompt,
             project_path=str(project_path),
+            created_by=self._created_by,
+            creator_session_id=self._creator_session_id,
             agent_policy=self.agent_combo.currentData(),
             priority=self.priority_spin.value(),
             estimated_tokens=self.estimated_tokens_spin.value(),
             approval_mode=self.approval_combo.currentData(),
+            auto_commit=self.auto_commit_check.isChecked(),
             max_retries=self.max_retries_spin.value(),
             retry_delay_minutes=self.retry_delay_spin.value(),
             recurrence_interval_days=recurrence_interval_days,

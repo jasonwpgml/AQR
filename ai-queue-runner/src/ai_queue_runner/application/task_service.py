@@ -20,11 +20,14 @@ from ai_queue_runner.domain.enums import (
     ApprovalMode,
     ErrorType,
     ReviewVerdict,
+    TaskCreator,
+    TaskEventAction,
     TaskStatus,
 )
-from ai_queue_runner.domain.models import Task, TaskReview, TaskRun
+from ai_queue_runner.domain.models import Task, TaskEvent, TaskReview, TaskRun
 from ai_queue_runner.infrastructure.path_policy import validate_project_path
 from ai_queue_runner.infrastructure.repositories import (
+    TaskEventRepository,
     TaskRepository,
     TaskReviewRepository,
     TaskRunRepository,
@@ -36,6 +39,13 @@ SessionFactory = Callable[[], Session]
 # A private tag keeps completed-task archival persistent without weakening the
 # state machine or requiring a schema migration; it must never leak into user tags.
 _ARCHIVED_TAG = "__ai_queue_runner_archived__"
+_ACTIVE_STATUSES = {
+    TaskStatus.WAITING,
+    TaskStatus.RESERVED,
+    TaskStatus.RUNNING,
+    TaskStatus.RETRY_WAIT,
+    TaskStatus.BLOCKED,
+}
 
 
 class TaskDraft(BaseModel):
@@ -46,10 +56,13 @@ class TaskDraft(BaseModel):
     title: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
     project_path: Path
+    created_by: TaskCreator | None = None
+    creator_session_id: str | None = Field(default=None, max_length=256)
     agent_policy: AgentPolicy = AgentPolicy.ANY
     priority: int = Field(default=50, ge=0, le=100)
     estimated_tokens: int = Field(default=0, ge=0)
     approval_mode: ApprovalMode = ApprovalMode.CONFIRM
+    auto_commit: bool = False
     max_retries: int = Field(default=2, ge=0)
     retry_delay_minutes: int = Field(default=10, ge=0)
     recurrence_interval_days: int | None = Field(default=None, ge=1)
@@ -97,12 +110,15 @@ class TaskView:
     title: str
     prompt: str
     project_path: str
+    created_by: TaskCreator
+    creator_session_id: str | None
     agent_policy: AgentPolicy
     assigned_agent: AgentName | None
     fallback_agent: AgentName | None
     priority: int
     status: TaskStatus
     approval_mode: ApprovalMode
+    auto_commit: bool
     max_retries: int
     retry_count: int
     retry_delay_minutes: int
@@ -185,6 +201,37 @@ class RunView:
     fallback_to_agent: AgentName | None
     worktree_path: str | None
     worktree_branch: str | None
+    auto_commit_hash: str | None
+    auto_commit_result: str | None
+
+
+@dataclass(frozen=True)
+class TaskEventView:
+    id: int
+    task_id: int
+    task_created_at: datetime
+    action: TaskEventAction
+    actor: TaskCreator
+    actor_session_id: str | None
+    project_path: str
+    task_title: str
+    details: dict[str, object]
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class BulkDeleteSkippedView:
+    id: int
+    title: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class BulkDeleteResultView:
+    project_path: str
+    matched_count: int
+    deleted_ids: tuple[int, ...]
+    skipped: tuple[BulkDeleteSkippedView, ...]
 
 
 @dataclass(frozen=True)
@@ -258,19 +305,52 @@ class _ProjectDailyAccumulator:
 class TaskService:
     """One-session-per-operation facade for desktop and runtime callers."""
 
-    def __init__(self, session_factory: SessionFactory, config: AppConfig) -> None:
+    def __init__(
+        self,
+        session_factory: SessionFactory,
+        config: AppConfig,
+        *,
+        actor: TaskCreator | str = TaskCreator.USER,
+        actor_session_id: str | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._config = config
+        self._actor = TaskCreator(actor)
+        self._actor_session_id = _normalize_session_id(actor_session_id)
 
-    def list(self, *, status: TaskStatus | str | None = None) -> list[TaskView]:
+    def list(
+        self,
+        *,
+        status: TaskStatus | str | None = None,
+        project_path: Path | str | None = None,
+        created_by: TaskCreator | str | None = None,
+        creator_session_id: str | None = None,
+        active: bool = False,
+    ) -> list[TaskView]:
+        if active and status is not None:
+            raise ValueError("status and active filters cannot be combined")
         archived_only = status == "archived"
         normalized_status = None if status is None or archived_only else TaskStatus(status)
+        canonical_path = (
+            None
+            if project_path is None
+            else str(self._canonical_project_path(project_path))
+        )
+        normalized_creator = None if created_by is None else TaskCreator(created_by)
+        normalized_session = _normalize_session_id(creator_session_id)
         with self._session_factory() as session:
-            tasks = TaskRepository(session).list(status=normalized_status)
+            tasks = TaskRepository(session).list(
+                status=normalized_status,
+                project_path=canonical_path,
+                created_by=normalized_creator,
+                creator_session_id=normalized_session,
+            )
             if archived_only:
                 tasks = [task for task in tasks if _is_archived(task)]
             else:
                 tasks = [task for task in tasks if not _is_archived(task)]
+            if active:
+                tasks = [task for task in tasks if task.status in _ACTIVE_STATUSES]
             return [_to_task_view(task) for task in tasks]
 
     def get(self, task_id: int) -> TaskView | None:
@@ -343,16 +423,35 @@ class TaskService:
                         title=f"Rework: {task.title}",
                         prompt=reopen_prompt.strip(),
                         project_path=task.project_path,
+                        created_by=self._actor,
+                        creator_session_id=self._actor_session_id,
                         agent_policy=task.agent_policy,
                         priority=task.priority,
                         estimated_tokens=task.estimated_tokens,
                         approval_mode=task.approval_mode,
+                        auto_commit=task.auto_commit,
                         max_retries=task.max_retries,
                         retry_delay_minutes=task.retry_delay_minutes,
                         tags=[tag for tag in task.tags if tag != _ARCHIVED_TAG],
                         rework_of_task_id=task.id,
                     )
                 )
+                self._record_event(
+                    session,
+                    rework_task,
+                    TaskEventAction.CREATED,
+                    {"rework_of_task_id": task.id},
+                )
+            self._record_event(
+                session,
+                task,
+                TaskEventAction.REVIEWED,
+                {
+                    "verdict": normalized_verdict.value,
+                    "score": score,
+                    "rework_task_id": None if rework_task is None else rework_task.id,
+                },
+            )
             session.commit()
             return TaskReviewResultView(
                 task=_to_task_view(task),
@@ -501,6 +600,8 @@ class TaskService:
             repo = TaskRepository(session)
             dependencies = self._load_batch_dependencies(repo, drafts)
             tasks = self._add_batch(repo, drafts, canonical_paths, dependencies)
+            for task in tasks:
+                self._record_event(session, task, TaskEventAction.CREATED)
             session.commit()
             return [_to_task_view(task) for task in tasks]
 
@@ -563,10 +664,26 @@ class TaskService:
                 dependencies,
                 split_parent_task_id=original.id,
             )
+            for child in children:
+                self._record_event(
+                    session,
+                    child,
+                    TaskEventAction.CREATED,
+                    {"split_parent_task_id": original.id},
+                )
             for dependent in dependents:
                 dependent.depends_on.remove(original)
                 for child in children:
                     repo.add_dependency(dependent, child)
+            self._record_event(
+                session,
+                original,
+                TaskEventAction.SPLIT,
+                {
+                    "child_task_ids": [child.id for child in children],
+                    "rewired_dependent_ids": list(dependent_ids),
+                },
+            )
             session.commit()
             return TaskSplitView(
                 original=_to_task_view(original),
@@ -594,7 +711,16 @@ class TaskService:
                 and Path(task.worktree_path).exists()
             ):
                 raise ValueError("clean up the task worktree before changing its project")
-            for field, value in _task_values(draft, canonical_path).items():
+            values = _task_values(
+                draft,
+                canonical_path,
+                default_creator=task.created_by,
+                default_session_id=task.creator_session_id,
+            )
+            changed_fields = sorted(
+                field for field, value in values.items() if getattr(task, field) != value
+            )
+            for field, value in values.items():
                 setattr(task, field, value)
             if project_changed:
                 task.use_worktree = False
@@ -604,6 +730,12 @@ class TaskService:
                 task.fallback_agent = None
             task.depends_on = dependencies
             task.updated_at = utcnow()
+            self._record_event(
+                session,
+                task,
+                TaskEventAction.UPDATED,
+                {"fields": changed_fields},
+            )
             session.commit()
             return _to_task_view(task)
 
@@ -618,6 +750,7 @@ class TaskService:
                 priority=source.priority,
                 estimated_tokens=source.estimated_tokens,
                 approval_mode=source.approval_mode,
+                auto_commit=source.auto_commit,
                 max_retries=source.max_retries,
                 retry_delay_minutes=source.retry_delay_minutes,
                 recurrence_interval_days=source.recurrence_interval_days,
@@ -639,6 +772,7 @@ class TaskService:
                 raise ValueError("only waiting, retry-wait, or blocked tasks can be cancelled")
             repo.set_status(task, TaskStatus.CANCELLED)
             task.finished_at = utcnow()
+            self._record_event(session, task, TaskEventAction.CANCELLED)
             session.commit()
             return _to_task_view(task)
 
@@ -657,6 +791,7 @@ class TaskService:
             task.started_at = None
             task.finished_at = None
             task.last_error = None
+            self._record_event(session, task, TaskEventAction.RETRIED)
             session.commit()
             return _to_task_view(task)
 
@@ -674,6 +809,7 @@ class TaskService:
                     other.updated_at = updated_at
             task.priority = 100
             task.updated_at = updated_at
+            self._record_event(session, task, TaskEventAction.PROMOTED)
             session.commit()
             return _to_task_view(task)
 
@@ -685,6 +821,7 @@ class TaskService:
             if not _is_archived(task):
                 task.tags = [*task.tags, _ARCHIVED_TAG]
                 task.updated_at = utcnow()
+                self._record_event(session, task, TaskEventAction.ARCHIVED)
                 session.commit()
             return _to_task_view(task)
 
@@ -692,23 +829,95 @@ class TaskService:
         with self._session_factory() as session:
             repo = TaskRepository(session)
             task = self._require_task(repo, task_id)
-            if task.status in {TaskStatus.RESERVED, TaskStatus.RUNNING}:
-                raise ValueError("reserved or running tasks must be cancelled before deletion")
-            if task.worktree_path and Path(task.worktree_path).exists():
-                raise ValueError("clean up the task worktree before deleting its history")
-            dependent_ids = sorted(dependent.id for dependent in task.dependents)
-            if dependent_ids:
-                joined_ids = ", ".join(str(dependent_id) for dependent_id in dependent_ids)
-                raise ValueError(f"task {task_id} is required by dependent tasks: {joined_ids}")
-            split_child_ids = [child.id for child in task.split_children]
-            if split_child_ids:
-                joined_ids = ", ".join(str(child_id) for child_id in split_child_ids)
-                raise ValueError(
-                    f"task {task_id} is the split parent of child tasks: {joined_ids}"
-                )
-            session.execute(sql_delete(TaskRun).where(TaskRun.task_id == task_id))
-            repo.delete(task)
+            reason = _deletion_block_reason(task)
+            if reason is not None:
+                raise ValueError(reason)
+            self._delete_in_session(session, repo, task)
             session.commit()
+
+    def delete_project_tasks(
+        self,
+        project_path: Path | str,
+        *,
+        created_by: TaskCreator | str | None = None,
+        creator_session_id: str | None = None,
+        statuses: list[TaskStatus | str] | None = None,
+    ) -> BulkDeleteResultView:
+        canonical_path = str(self._canonical_project_path(project_path))
+        normalized_creator = None if created_by is None else TaskCreator(created_by)
+        normalized_session = _normalize_session_id(creator_session_id)
+        status_values = (
+            None
+            if statuses is None
+            else {str(getattr(status, "value", status)) for status in statuses}
+        )
+        normalized_statuses = (
+            set()
+            if status_values is None
+            else {
+                TaskStatus(status)
+                for status in status_values
+                if status != "archived"
+            }
+        )
+        with self._session_factory() as session:
+            repo = TaskRepository(session)
+            candidates = repo.list(
+                project_path=canonical_path,
+                created_by=normalized_creator,
+                creator_session_id=normalized_session,
+            )
+            if status_values is not None:
+                candidates = [
+                    task
+                    for task in candidates
+                    if (
+                        (_is_archived(task) and "archived" in status_values)
+                        or (
+                            not _is_archived(task)
+                            and task.status in normalized_statuses
+                        )
+                    )
+                ]
+            remaining = {task.id for task in candidates}
+            deleted_ids: list[int] = []
+            while remaining:
+                deleted_one = False
+                for task_id in sorted(remaining, reverse=True):
+                    task = repo.get(task_id)
+                    if task is None:
+                        remaining.remove(task_id)
+                        continue
+                    if _deletion_block_reason(task) is not None:
+                        continue
+                    self._delete_in_session(session, repo, task)
+                    session.flush()
+                    deleted_ids.append(task_id)
+                    remaining.remove(task_id)
+                    session.expire_all()
+                    deleted_one = True
+                    break
+                if not deleted_one:
+                    break
+            skipped = []
+            for task_id in sorted(remaining):
+                task = repo.get(task_id)
+                if task is None:
+                    continue
+                skipped.append(
+                    BulkDeleteSkippedView(
+                        id=task.id,
+                        title=task.title,
+                        reason=_deletion_block_reason(task) or "task could not be deleted",
+                    )
+                )
+            session.commit()
+            return BulkDeleteResultView(
+                project_path=canonical_path,
+                matched_count=len(candidates),
+                deleted_ids=tuple(sorted(deleted_ids)),
+                skipped=tuple(skipped),
+            )
 
     def list_runs(self, task_id: int) -> list[RunView]:
         with self._session_factory() as session:
@@ -718,6 +927,66 @@ class TaskService:
                 _to_run_view(run)
                 for run in TaskRunRepository(session).list_for_task(task_id)
             ]
+
+    def list_events(
+        self,
+        task_id: int | None = None,
+        *,
+        project_path: Path | str | None = None,
+        actor: TaskCreator | str | None = None,
+        limit: int = 100,
+    ) -> list[TaskEventView]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("event limit must be between 1 and 1000")
+        canonical_path = (
+            None
+            if project_path is None
+            else str(self._canonical_project_path(project_path))
+        )
+        normalized_actor = None if actor is None else TaskCreator(actor)
+        with self._session_factory() as session:
+            task_created_at = None
+            if task_id is not None:
+                task = TaskRepository(session).get(task_id)
+                task_created_at = None if task is None else task.created_at
+            events = TaskEventRepository(session).list(
+                task_id=task_id,
+                task_created_at=task_created_at,
+                project_path=canonical_path,
+                actor=normalized_actor,
+                limit=limit,
+            )
+            return [_to_event_view(event) for event in events]
+
+    def _delete_in_session(
+        self,
+        session: Session,
+        repo: TaskRepository,
+        task: Task,
+    ) -> None:
+        self._record_event(session, task, TaskEventAction.DELETED)
+        session.execute(sql_delete(TaskRun).where(TaskRun.task_id == task.id))
+        repo.delete(task)
+
+    def _record_event(
+        self,
+        session: Session,
+        task: Task,
+        action: TaskEventAction,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        TaskEventRepository(session).add(
+            TaskEvent(
+                task_id=task.id,
+                task_created_at=task.created_at,
+                action=action,
+                actor=self._actor,
+                actor_session_id=self._actor_session_id,
+                project_path=task.project_path,
+                task_title=task.title,
+                details={} if details is None else details,
+            )
+        )
 
     def _canonical_project_path(self, value: Path | str) -> Path:
         return validate_project_path(value, self._config.app.allowed_project_roots)
@@ -747,8 +1016,8 @@ class TaskService:
     ) -> list[list[Task]]:
         return [cls._load_dependencies(repo, draft.dependency_ids) for draft in drafts]
 
-    @staticmethod
     def _add_batch(
+        self,
         repo: TaskRepository,
         drafts: list[TaskDraft],
         canonical_paths: list[Path],
@@ -759,7 +1028,12 @@ class TaskService:
         tasks = [
             repo.add(
                 Task(
-                    **_task_values(draft, canonical_path),
+                    **_task_values(
+                        draft,
+                        canonical_path,
+                        default_creator=self._actor,
+                        default_session_id=self._actor_session_id,
+                    ),
                     depends_on=child_dependencies,
                     split_parent_task_id=split_parent_task_id,
                 )
@@ -808,15 +1082,30 @@ def validate_sibling_dependency_indices(drafts: list[TaskDraft]) -> None:
         visit(task_index)
 
 
-def _task_values(draft: TaskDraft, canonical_path: Path) -> dict[str, object]:
+def _task_values(
+    draft: TaskDraft,
+    canonical_path: Path,
+    *,
+    default_creator: TaskCreator,
+    default_session_id: str | None,
+) -> dict[str, object]:
+    created_by = draft.created_by or default_creator
+    creator_session_id = (
+        draft.creator_session_id
+        if draft.creator_session_id is not None
+        else default_session_id
+    )
     return {
         "title": draft.title,
         "prompt": draft.prompt,
         "project_path": str(canonical_path),
+        "created_by": created_by,
+        "creator_session_id": creator_session_id,
         "agent_policy": draft.agent_policy,
         "priority": draft.priority,
         "estimated_tokens": draft.estimated_tokens,
         "approval_mode": draft.approval_mode,
+        "auto_commit": draft.auto_commit,
         "max_retries": draft.max_retries,
         "retry_delay_minutes": draft.retry_delay_minutes,
         "recurrence_interval_days": draft.recurrence_interval_days,
@@ -842,12 +1131,15 @@ def _to_task_view(task: Task) -> TaskView:
         title=task.title,
         prompt=task.prompt,
         project_path=task.project_path,
+        created_by=task.created_by,
+        creator_session_id=task.creator_session_id,
         agent_policy=task.agent_policy,
         assigned_agent=task.assigned_agent,
         fallback_agent=task.fallback_agent,
         priority=task.priority,
         status=task.status,
         approval_mode=task.approval_mode,
+        auto_commit=task.auto_commit,
         max_retries=task.max_retries,
         retry_count=task.retry_count,
         retry_delay_minutes=task.retry_delay_minutes,
@@ -960,4 +1252,49 @@ def _to_run_view(run: TaskRun) -> RunView:
         fallback_to_agent=run.fallback_to_agent,
         worktree_path=run.worktree_path,
         worktree_branch=run.worktree_branch,
+        auto_commit_hash=run.auto_commit_hash,
+        auto_commit_result=run.auto_commit_result,
     )
+
+
+def _to_event_view(event: TaskEvent) -> TaskEventView:
+    return TaskEventView(
+        id=event.id,
+        task_id=event.task_id,
+        task_created_at=event.task_created_at,
+        action=event.action,
+        actor=event.actor,
+        actor_session_id=event.actor_session_id,
+        project_path=event.project_path,
+        task_title=event.task_title,
+        details=dict(event.details),
+        created_at=event.created_at,
+    )
+
+
+def _normalize_session_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("creator session ID must not be empty")
+    if len(normalized) > 256:
+        raise ValueError("creator session ID must be at most 256 characters")
+    return normalized
+
+
+def _deletion_block_reason(task: Task) -> str | None:
+    if task.status in {TaskStatus.RESERVED, TaskStatus.RUNNING}:
+        return "reserved or running tasks must be cancelled before deletion"
+    if task.worktree_path and Path(task.worktree_path).exists():
+        return "clean up the task worktree before deleting its history"
+    relations = (
+        ("required by dependent tasks", sorted(item.id for item in task.dependents)),
+        ("the split parent of child tasks", [item.id for item in task.split_children]),
+        ("the rework source of tasks", [item.id for item in task.rework_tasks]),
+    )
+    for label, related_ids in relations:
+        if related_ids:
+            joined_ids = ", ".join(str(task_id) for task_id in related_ids)
+            return f"task {task.id} is {label}: {joined_ids}"
+    return None

@@ -181,6 +181,8 @@ Config         TOML
 title: string
 prompt: string
 project_path: absolute path
+created_by: unknown | user | claude | codex | system
+creator_session_id: string | null
 agent_policy: claude | codex | any
 priority: integer 0..100
 status: waiting
@@ -611,6 +613,8 @@ CREATE TABLE tasks (
     title TEXT NOT NULL,
     prompt TEXT NOT NULL,
     project_path TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT 'user',
+    creator_session_id TEXT,
     agent_policy TEXT NOT NULL,
     assigned_agent TEXT,
     priority INTEGER NOT NULL DEFAULT 50,
@@ -681,6 +685,33 @@ CREATE TABLE settings (
     value_json TEXT NOT NULL
 );
 ```
+
+## 9.6 task_events
+
+관리 주체와 변경 이력을 작업 영구 삭제 뒤에도 확인하기 위한 논리 스냅샷이다. `task_id`는
+의도적으로 외래 키가 아니며 `task_created_at`과 함께 숫자 ID 재사용을 구분한다.
+
+```sql
+CREATE TABLE task_events (
+    id INTEGER PRIMARY KEY,
+    task_id INTEGER NOT NULL,
+    task_created_at DATETIME NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    actor_session_id TEXT,
+    project_path TEXT NOT NULL,
+    task_title TEXT NOT NULL,
+    details_json JSON NOT NULL,
+    created_at DATETIME NOT NULL
+);
+```
+
+`[DECISION]`
+
+- AI 관리 CLI는 `actor`와 선택적 세션 ID를 기록한다.
+- 작업은 프로젝트·생성자·세션·활성 상태로 범위 조회할 수 있다.
+- 프로젝트 범위 영구 삭제는 사용자 승인을 요구하지 않으며 삭제 불가 항목의 사유를 반환한다.
+- DB 초기화와 마이그레이션은 SQLite writer transaction으로 직렬화한다.
 
 ---
 
@@ -1407,7 +1438,6 @@ Claude는 매 작업 후 아래를 확인한다.
 - OpenAI API / Anthropic API 비용 기반 라우팅
 - 원격 서버 실행
 - 웹 대시보드
-- 작업 완료 후 자동 commit
 - 사용자가 승인한 경우 draft PR 생성
 
 ---

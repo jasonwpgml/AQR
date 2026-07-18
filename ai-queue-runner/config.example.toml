@@ -51,6 +51,11 @@ project_lock_mode = "exclusive"
 worktree_parallel_enabled = false
 worktree_git_timeout_seconds = 30
 
+# Commit a successful task's changes only when this switch and the task's
+# auto_commit flag are both true. Repositories must be clean before execution.
+auto_commit_enabled = false
+auto_commit_git_timeout_seconds = 30
+
 # Per-agent settings. limit_patterns are substrings searched in CLI output to
 # classify usage-limit errors; adjust them to match your installed CLI versions.
 [agents.claude]

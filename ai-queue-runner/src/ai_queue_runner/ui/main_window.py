@@ -130,6 +130,10 @@ class MainWindow(QMainWindow):
         ):
             self.status_filter.addItem(label, status)
         self.status_filter.currentIndexChanged.connect(self.refresh)
+        self.project_filter = QComboBox()
+        self.project_filter.setAccessibleName("프로젝트 필터")
+        self.project_filter.addItem("모든 프로젝트", None)
+        self.project_filter.currentIndexChanged.connect(self.refresh)
 
         self.task_model = TaskTableModel()
         self.task_table = QTableView()
@@ -146,6 +150,7 @@ class MainWindow(QMainWindow):
         header.resizeSection(TaskColumn.AGENT, 76)
         header.resizeSection(TaskColumn.STATUS, 140)
         header.resizeSection(TaskColumn.TITLE, 330)
+        header.resizeSection(TaskColumn.CREATOR, 80)
         self.task_table.selectionModel().selectionChanged.connect(self._selection_changed)
         self.task_table.doubleClicked.connect(lambda _index: self.edit_task())
         self.task_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -196,6 +201,8 @@ class MainWindow(QMainWindow):
         scheduler_controls.addStretch(1)
         scheduler_controls.addWidget(QLabel("필터"))
         scheduler_controls.addWidget(self.status_filter)
+        scheduler_controls.addWidget(QLabel("프로젝트"))
+        scheduler_controls.addWidget(self.project_filter)
         scheduler_controls.addWidget(self.refresh_button)
 
         self.queue_page = QWidget()
@@ -255,10 +262,20 @@ class MainWindow(QMainWindow):
         selected_id = getattr(self._selected_task, "id", None)
         try:
             tasks = self._list_tasks(self.status_filter.currentData())
+            all_tasks = self._list_tasks()
+            archived_tasks = self._list_tasks("archived")
             states = self._list_agent_states()
         except Exception as exc:  # UI boundary: service failures remain visible.
             self.statusBar().showMessage(f"새로고침 실패: {exc}")
             return
+        self._sync_project_filter([*all_tasks, *archived_tasks, *tasks])
+        selected_project = self.project_filter.currentData()
+        if selected_project is not None:
+            tasks = [
+                task
+                for task in tasks
+                if str(getattr(task, "project_path", "")) == selected_project
+            ]
         self.task_model.set_tasks(tasks)
         by_agent = {enum_value(getattr(state, "agent", "")): state for state in states}
         for agent, widget in self.agent_widgets.items():
@@ -292,6 +309,23 @@ class MainWindow(QMainWindow):
             self.tray.set_next_task(waiting)
         self._update_action_state()
         self.statusBar().showMessage(f"작업 {len(tasks)}개", 3000)
+
+    def _sync_project_filter(self, tasks: list[object]) -> None:
+        selected = self.project_filter.currentData()
+        paths = sorted(
+            {str(getattr(task, "project_path", "")) for task in tasks}
+            - {""},
+            key=str.casefold,
+        )
+        self.project_filter.blockSignals(True)
+        self.project_filter.clear()
+        self.project_filter.addItem("모든 프로젝트", None)
+        for path in paths:
+            name = Path(path).name or path
+            self.project_filter.addItem(f"{name} — {path}", path)
+        index = self.project_filter.findData(selected)
+        self.project_filter.setCurrentIndex(max(index, 0))
+        self.project_filter.blockSignals(False)
 
     def _restore_selection(self, task_id: object) -> None:
         if task_id is None:
@@ -340,7 +374,11 @@ class MainWindow(QMainWindow):
             f"우선순위: {getattr(task, 'priority', '')}",
             f"예상 토큰: {getattr(task, 'estimated_tokens', 0):,}",
             f"프로젝트: {getattr(task, 'project_path', '')}",
+            f"생성자: {enum_value(getattr(task, 'created_by', 'unknown'))}",
+            "생성 세션: " + str(getattr(task, "creator_session_id", None) or "-"),
             f"재시도: {getattr(task, 'retry_count', 0)} / {getattr(task, 'max_retries', 0)}",
+            "자동 커밋 요청: "
+            + ("예" if bool(getattr(task, "auto_commit", False)) else "아니요"),
         ]
         review_verdict = enum_value(getattr(task, "review_verdict", None))
         review_score = getattr(task, "review_score", None)
@@ -376,6 +414,34 @@ class MainWindow(QMainWindow):
                 f"{enum_value(run.fallback_to_agent)} ({enum_value(run.error_type)})"
                 for run in fallback_runs[-5:]
             )
+        auto_commit_runs = [
+            run
+            for run in runs
+            if getattr(run, "auto_commit_hash", None)
+            or getattr(run, "auto_commit_result", None)
+        ]
+        if auto_commit_runs:
+            details.extend(("", "자동 커밋 이력:"))
+            details.extend(
+                f"- attempt {run.attempt}: "
+                f"{getattr(run, 'auto_commit_hash', None) or run.auto_commit_result}"
+                for run in auto_commit_runs[-5:]
+            )
+        list_events = getattr(self.task_service, "list_events", None)
+        if callable(list_events):
+            try:
+                events = list(list_events(task.id, limit=10))
+            except Exception as exc:
+                self.statusBar().showMessage(f"관리 이력 조회 실패: {exc}")
+                events = []
+            if events:
+                details.extend(("", "최근 관리 이력:"))
+                details.extend(
+                    f"- {getattr(event, 'created_at', '')} "
+                    f"{enum_value(getattr(event, 'actor', ''))} "
+                    f"{enum_value(getattr(event, 'action', ''))}"
+                    for event in events
+                )
         details.extend(("", "프롬프트:", str(getattr(task, "prompt", ""))))
         self.details_view.setPlainText("\n".join(details))
         self.log_viewer.set_run(runs[-1] if runs else None)

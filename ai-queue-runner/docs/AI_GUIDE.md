@@ -7,10 +7,14 @@
 
 ```powershell
 # 기본 형식 (ai-queue-runner/ 기준, venv는 저장소 루트)
-..\.venv\Scripts\python -m ai_queue_runner --config config.toml <subcommand> [옵션]
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml `
+  --actor <user|claude|codex|system> --actor-session <ID> <subcommand> [옵션]
 ```
 
 - `--config` 생략 시: 현재 폴더 `config.toml` → 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`.
+- AI가 큐를 변경할 때는 전역 `--actor`와 가능하면 `--actor-session`을 하위 명령 앞에
+  지정한다. 생략 시 `user`로 기록된다. 생성 작업의 `created_by`/`creator_session_id`와
+  모든 관리 이벤트의 호출 주체를 다음 세션에서 다시 찾는 기준으로 사용한다.
 - **모든 하위 명령은 `--json`을 지원한다.** AI는 항상 `--json`을 사용할 것.
   열거형은 문자열, 시각은 UTC ISO-8601(`...Z`)로 출력된다.
 - `--not-before`/`--until` 입력은 **로컬 시간** `"YYYY-MM-DD HH:MM"` 형식이고 내부에는 UTC로 저장된다.
@@ -33,28 +37,70 @@
 
 | 명령 | 용도 | 주요 옵션/인자 |
 |---|---|---|
-| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
+| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--auto-commit`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
 | `save-template NAME` | 단일 작업 초안 저장/덮어쓰기 | `--title --prompt` 필수, 나머지는 `add-task`와 같은 기본 필드. `--project`는 나중에 지정 가능 |
 | `list-templates` / `show-template NAME` | 템플릿 목록/상세 조회 | 이름순 목록, 저장된 TaskDraft 기본값 확인 |
 | `add-from-template NAME` | 변수 치환 후 작업 등록 | `--var key=value` 반복, TaskDraft 오버라이드, `--dry-run` |
 | `delete-template NAME` | 템플릿 삭제 | 작업과 이미 등록된 작업에는 영향 없음 |
-| `list-tasks` | 목록 조회 | `--status {waiting,reserved,running,succeeded,failed,retry_wait,blocked,cancelled,archived}` |
-| `show-task ID` | 상세 + 최근 5회 실행 | 반복·분할·재작업 관계와 최신 평가(`review_status`, `review_score`, `review_count`) 확인 |
+| `list-tasks` | 범위 목록 조회 | `--project PATH`, `--created-by`, `--creator-session`, `--active` 또는 `--status` |
+| `show-task ID` | 상세 + 최근 실행/관리 이력 | 출처·반복·분할·재작업 관계, 평가, 자동 커밋 결과 확인 |
+| `list-events` | 삭제 후에도 남는 관리 이력 조회 | `--task-id`, `--project`, `--actor`, `--limit` |
 | `pending-reviews` | 성공했지만 미평가인 작업 조회 | `--project PATH`로 프로젝트 한정, 완료 시각 순 |
 | `review-task ID` | 성공 작업 품질 평가 기록 | `--verdict {pass,fail}` 필수, `--score 1-5`, `--notes`, fail 전용 `--reopen PROMPT` |
-| `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run` |
+| `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run`, `auto_commit_enabled` |
 | `daily-summary` | 로컬 날짜의 프로젝트별 종료 활동 요약 | `--date YYYY-MM-DD`(생략 시 오늘), 완료·실패·차단·취소·실행·fallback·worktree·사용량 제한 |
 | `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
 | `split-task ID PATH` | 대기 작업을 같은 JSON 계약의 하위 작업 배치로 원자적 교체 | JSON 파일, `--dry-run` |
 | `cleanup-worktree ID` | 병합 완료된 종료 작업의 worktree 제거 | dirty/미병합 커밋이면 거부, 브랜치는 유지 |
-| `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--approval auto`, `--repeat`, `--clear-repeat`, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
+| `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--auto-commit`/`--no-auto-commit`, `--approval auto`, `--repeat`, `--clear-repeat`, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
 | `retry-task ID` | 실패(failed)/차단(blocked) 작업 재대기 | 재시도 횟수·오류 초기화 |
 | `cancel-task ID` | 대기·재시도대기·차단 작업 취소 | |
 | `duplicate-task ID` | 작업 복제(새 waiting 작업) | |
 | `move-top ID` | 대기 작업을 맨 위로(P100) | |
 | `archive-task ID` | 성공(succeeded) 작업 보관 | |
 | `delete-task ID` | 작업+실행 기록 영구 삭제 | reserved/running은 불가, 의존 작업 있으면 불가 |
+| `delete-tasks` | 프로젝트 범위 영구 삭제 | `--project PATH` 필수, `--created-by`, `--creator-session`, `--status` 반복 가능; 건너뛴 사유 반환 |
 | `set-agent AGENT STATE` | 에이전트 수동 상태 설정 | `claude|codex` × `available|cooldown|disabled`, cooldown은 `--until "YYYY-MM-DD HH:MM"` |
+
+## 작업 출처와 프로젝트 범위 관리
+
+`created_by`는 작업을 처음 만든 호출 주체이고 `creator_session_id`는 호출자가 제공한 불투명
+세션 식별자다. GUI에서 만든 작업은 `user`, 기존 DB에서 이관한 작업은 추정하지 않고
+`unknown`이다. 반복 후속 회차는 원본 출처를 유지하고, 템플릿으로 만든 작업·분할 하위
+작업·재작업·복제는 해당 명령을 실행한 현재 actor에 귀속된다.
+
+```powershell
+# 필요하면 이전 세션 ID로 재발견
+... --json list-tasks --project "C:\projects\sample" --created-by codex --active
+... --json list-tasks --project "C:\projects\sample" --created-by codex `
+    --creator-session "codex-20260718-a"
+
+# 단일 작업 상세에는 recent_events가 포함됨
+... --json show-task 42
+
+# 작업이 이미 영구 삭제됐어도 이벤트는 조회 가능
+... --json list-events --task-id 42
+... --json list-events --project "C:\projects\sample" --actor codex
+```
+
+- `created_by`는 `unknown|user|claude|codex|system`이다. v10 이전 작업은 추정하지 않고
+  `unknown`으로 마이그레이션한다.
+- 반복 후속 회차는 최초 작업의 생성자·세션을 승계하고 생성 이벤트의 actor는 `system`이다.
+- 템플릿으로 만든 작업, 분할 하위 작업, 복제·재작업은 호출한 AI의 actor/세션을 사용한다.
+- 관리 이벤트는 생성·수정·취소·재시도·맨 위 이동·보관·평가·분할·삭제를 기록한다.
+  이벤트에는 당시 프로젝트와 제목도 저장되어 작업 행이 없어도 사람이 확인할 수 있다.
+
+프로젝트 전체 또는 한 AI/세션이 만든 작업을 정리할 때는 `delete-task` 반복 대신 범위가
+명시된 `delete-tasks`를 사용한다. 영구 삭제 자체에 사용자 확인은 요구하지 않는다.
+
+```powershell
+... --actor claude --actor-session "claude-cleanup-1" --json delete-tasks `
+    --project "C:\projects\sample" --created-by claude
+```
+
+대상 안의 의존 작업은 가능한 순서로 먼저 삭제한다. `reserved`/`running`, 남아 있는
+worktree, 범위 밖 작업이 참조하는 의존·분할·재작업 원본은 삭제하지 않고 `skipped`에
+ID·제목·사유를 반환한다. 나머지 삭제는 그대로 커밋된다.
 
 ## 반복 작업 템플릿
 
@@ -69,7 +115,7 @@
     --title "{feature} 구현" `
     --prompt "{feature} 구현 후 {checks} 통과" `
     --project "C:\projects\sample" --agent codex --priority 80 `
-    --estimated-tokens 20000 --approval auto --json
+    --estimated-tokens 20000 --approval auto --auto-commit --json
 
 # 조회
 ... list-templates --json
@@ -93,7 +139,7 @@
 나열하고 등록을 거부합니다. 사용하지 않은 추가 변수는 무시합니다.
 
 `--title`, `--prompt`, `--project`, `--agent`, `--priority`, `--estimated-tokens`,
-`--approval`, `--not-before`, `--max-retries`, `--retry-delay`, `--repeat`, `--tag`,
+`--approval`, `--auto-commit`/`--no-auto-commit`, `--not-before`, `--max-retries`, `--retry-delay`, `--repeat`, `--tag`,
 `--depends-on`은 저장값보다 우선합니다. title/prompt를 직접 오버라이드하면 해당 템플릿
 필드의 변수는 요구하지 않습니다. `--tag`와 `--depends-on`은 각각 전체 목록을 교체합니다.
 `--dry-run`도 실제 등록과 같은 `TaskService` 검증을 수행하지만 `tasks` 행을 만들지 않습니다.
@@ -318,6 +364,37 @@ worktree_parallel_enabled = true
 성공해도 `aqr/T7` 브랜치는 삭제하지 않는다. squash/rebase로 내용만 반영해 브랜치 커밋이
 HEAD의 조상이 아닌 경우도 보수적으로 거부하므로, 필요하면 먼저 정상 merge하거나 Git을
 직접 확인한다.
+
+## 성공 후 자동 Git 커밋
+
+자동 커밋은 기본값이 off이며 다음 두 opt-in이 모두 있어야 동작한다.
+
+```toml
+[scheduler]
+auto_commit_enabled = true
+```
+
+```powershell
+# 새 작업
+... add-task --title "회귀 테스트 추가" --prompt "..." `
+    --project "C:\projects\sample" --agent codex --approval auto `
+    --auto-commit --json
+
+# 기존 waiting 작업 토글
+... update-task 7 --auto-commit --json
+... update-task 7 --no-auto-commit --json
+```
+
+- AQR은 실제 실행 cwd에서 CLI를 시작하기 전에 `git status --porcelain`을 캡처한다.
+  일반 프로젝트와 재사용 worktree 모두 같은 검사를 받는다.
+- 비Git 디렉터리, 실행 전부터 dirty인 저장소, 성공 후 변경이 없는 저장소는 작업 실패가
+  아니라 커밋 생략이다. 특히 사전 dirty 저장소는 이전 작업을 섞지 않기 위해 거부한다.
+- clean 상태에서 시작해 성공 후 변경이 있으면 `git add -A`와
+  `aqr: <작업 제목> (task #<ID>)` 형식의 커밋을 실행한다. 본문에는 실행 ID와 AI가 들어간다.
+- worktree 실행은 해당 `aqr/T<ID>` 브랜치에 커밋하며 자동 merge·push·PR 생성은 하지 않는다.
+- Git 명령이나 커밋 훅이 실패해도 작업은 `succeeded`를 유지한다. 실패 사유만 실행 기록에
+  남으며, `show-task ID --json`의 `recent_runs[].auto_commit_hash` 또는
+  `recent_runs[].auto_commit_result`로 확인한다.
 
 ## 상태 머신 (어떤 명령이 통하는지)
 

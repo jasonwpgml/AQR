@@ -2,7 +2,7 @@
 
 Claude Code와 Codex CLI에 맡길 작업을 미리 등록하고, 에이전트 상태·우선순위·선행 작업·대기 시간에 따라 안전하게 실행하는 Windows용 로컬 데스크톱 앱입니다.
 
-작업과 실행 이력은 SQLite에 유지되며, 동일 작업의 중복 배정과 동일 프로젝트의 동시 실행을 DB 예약 단계에서 막습니다. 명시적으로 opt-in하면 잠금 충돌 작업만 전용 Git worktree에서 병렬 실행할 수 있습니다. 전체 요구사항은 [`../AI_QUEUE_RUNNER_PLAN.md`](../AI_QUEUE_RUNNER_PLAN.md), 구현 구조는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), UI 기준은 [`DESIGN.md`](DESIGN.md)에 있습니다.
+작업과 실행 이력은 SQLite에 유지되며, 동일 작업의 중복 배정과 동일 프로젝트의 동시 실행을 DB 예약 단계에서 막습니다. 각 작업에는 생성 AI와 세션이 기록되고 관리 이력은 작업을 영구 삭제해도 남습니다. 명시적으로 opt-in하면 잠금 충돌 작업만 전용 Git worktree에서 병렬 실행할 수 있습니다. 전체 요구사항은 [`../AI_QUEUE_RUNNER_PLAN.md`](../AI_QUEUE_RUNNER_PLAN.md), 구현 구조는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), UI 기준은 [`DESIGN.md`](DESIGN.md)에 있습니다.
 
 ## 현재 상태
 
@@ -44,6 +44,10 @@ allowed_project_roots = ["C:/Users/me/projects"]
 `worktree_parallel_enabled = true`를 명시합니다(기본 `false`). 충돌 작업은
 `worktrees_dir/T<ID>`와 `aqr/T<ID>` 브랜치를 사용하며 자동 머지하지 않습니다.
 
+성공한 실행 결과를 자동 커밋하려면 `[scheduler] auto_commit_enabled = true`와 작업별
+`--auto-commit`을 모두 켭니다. 실행 전부터 dirty인 저장소는 이전 변경을 섞지 않도록
+커밋을 생략하며, Git 실패가 작업의 `succeeded` 상태를 되돌리지는 않습니다.
+
 ## 사용 흐름
 
 1. Claude/Codex 상태 패널에서 사용 가능 여부나 재사용 가능 시각을 설정합니다.
@@ -57,13 +61,15 @@ allowed_project_roots = ["C:/Users/me/projects"]
 
 ## AI/CLI 연동
 
-GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `queue-status`, `daily-summary`, `pending-reviews`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`), 반복 작업 정의(`save-template`, `list-templates`, `show-template`, `add-from-template`, `delete-template`), 완료 품질 평가(`review-task`), 원자적 작업 분할(`split-task`), worktree 정리(`cleanup-worktree`), 에이전트 상태(`set-agent`), 토큰 배치 계획(`plan-batch`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
+GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `list-events`, `queue-status`, `daily-summary`, `pending-reviews`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`, `delete-tasks`), 반복 작업 정의(`save-template`, `list-templates`, `show-template`, `add-from-template`, `delete-template`), 완료 품질 평가(`review-task`), 원자적 작업 분할(`split-task`), worktree 정리(`cleanup-worktree`), 에이전트 상태(`set-agent`), 토큰 배치 계획(`plan-batch`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
 
 ```powershell
 # AI 도우미가 특정 프로젝트의 작업을 등록
-..\.venv\Scripts\python -m ai_queue_runner --config config.toml add-task `
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml `
+  --actor codex --actor-session "codex-session-42" add-task `
   --title "회귀 테스트 추가" --prompt "변경된 예약 흐름의 회귀 테스트를 추가하세요." `
-  --project "C:\projects\sample" --agent codex --priority 80 --approval confirm
+  --project "C:\projects\sample" --agent codex --priority 80 --approval confirm `
+  --auto-commit
 
 # 선택한 날짜의 오전 9시(로컬 시간) 이후 실행하도록 예약
 ..\.venv\Scripts\python -m ai_queue_runner --config config.toml add-task `
@@ -77,6 +83,16 @@ GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전�
 
 # 기계 판독 가능한 출력(열거형은 문자열, 시각은 UTC ISO-8601)
 ..\.venv\Scripts\python -m ai_queue_runner --config config.toml --json list-tasks
+
+# 프로젝트·생성 AI·세션으로 다시 찾고, 같은 범위를 영구 정리
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml --json list-tasks `
+  --project "C:\projects\sample" --created-by codex `
+  --creator-session "codex-session-42" --active
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml --json delete-tasks `
+  --project "C:\projects\sample" --created-by codex `
+  --creator-session "codex-session-42"
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml --json list-events `
+  --project "C:\projects\sample"
 
 # 오늘 또는 지정한 로컬 날짜의 프로젝트별 실행 결과 요약
 ..\.venv\Scripts\python -m ai_queue_runner --config config.toml daily-summary --json

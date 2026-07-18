@@ -52,3 +52,7 @@ D047 A split first CAS-cancels only a waiting/retry-wait/blocked original, then 
 D048 Quality reviews are append-only `task_reviews` rows; the highest review ID is the current verdict, preserving every re-review while `review_count`/revision exposes replacement history
 D049 A failed review may atomically create one linked waiting task per invocation through `tasks.rework_of_task_id`; it inherits the original queue policy fields but uses the explicit reopen prompt and does not inherit recurrence
 D050 Task templates are single-task DB drafts: project_path may be deferred until render, title/prompt support only simple identifier placeholders, explicit overrides win, and batch-only sibling dependency indices are not persisted
+D051 Automatic Git commit requires global and per-task opt-in, snapshots clean state before every execution cwd including worktrees, persists success before Git, and records the hash or non-fatal skip/failure reason on the task run
+D052 Task provenance stores created_by plus an optional creator_session_id; recurring successors preserve provenance, while command-created derivatives belong to the current CLI actor
+D053 task_events intentionally has no task foreign key so management history survives hard deletion; task_created_at disambiguates a reused numeric ID
+D054 Schema initialization takes one SQLite BEGIN IMMEDIATE writer transaction around legacy inference, create_all, and every migration so concurrent AI CLI commands cannot race DDL

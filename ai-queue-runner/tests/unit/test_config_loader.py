@@ -17,6 +17,7 @@ def test_defaults_when_no_config_file(tmp_path, monkeypatch):
     assert config.scheduler.fallback_enabled is True
     assert config.scheduler.fallback_failure_threshold == 1
     assert config.scheduler.worktree_parallel_enabled is False
+    assert config.scheduler.auto_commit_enabled is False
 
 
 def test_default_app_data_dir_has_home_fallback(tmp_path, monkeypatch):
@@ -45,6 +46,8 @@ dedicated_agent_bonus = 30
 fallback_enabled = false
 fallback_failure_threshold = 2
 worktree_parallel_enabled = true
+auto_commit_enabled = true
+auto_commit_git_timeout_seconds = 45
 
 [agents.claude]
 limit_patterns = ["custom limit message"]
@@ -59,6 +62,8 @@ limit_patterns = ["custom limit message"]
     assert config.scheduler.fallback_enabled is False
     assert config.scheduler.fallback_failure_threshold == 2
     assert config.scheduler.worktree_parallel_enabled is True
+    assert config.scheduler.auto_commit_enabled is True
+    assert config.scheduler.auto_commit_git_timeout_seconds == 45
     assert config.agents["claude"].limit_patterns == ["custom limit message"]
     assert config.agents["claude"].executable == "claude"
     assert config.agents["codex"].executable == "codex"

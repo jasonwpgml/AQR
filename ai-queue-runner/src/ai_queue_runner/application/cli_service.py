@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from ai_queue_runner.application.agent_service import AgentService, AgentView
+from ai_queue_runner.application.daily_summary_formatter import format_daily_summary
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
 from ai_queue_runner.application.task_template_service import (
     TaskTemplateDraft,
@@ -41,8 +42,19 @@ def run_cli_command(args: argparse.Namespace, config: AppConfig) -> str:
     try:
         init_db(engine)
         session_factory = make_session_factory(engine)
-        service = TaskService(session_factory, config)
-        templates = TaskTemplateService(session_factory)
+        actor = getattr(args, "actor", "user")
+        actor_session_id = getattr(args, "actor_session", None)
+        service = TaskService(
+            session_factory,
+            config,
+            actor=actor,
+            actor_session_id=actor_session_id,
+        )
+        templates = TaskTemplateService(
+            session_factory,
+            actor=actor,
+            actor_session_id=actor_session_id,
+        )
         agents = AgentService(session_factory)
         worktrees = WorktreeService(session_factory, config)
         try:
@@ -71,6 +83,7 @@ def _dispatch(
                 priority=args.priority,
                 estimated_tokens=args.estimated_tokens,
                 approval_mode=args.approval,
+                auto_commit=args.auto_commit,
                 max_retries=args.max_retries,
                 recurrence_interval_days=_parse_recurrence_interval(args.repeat),
                 not_before=_parse_local_datetime(args.not_before),
@@ -95,6 +108,7 @@ def _dispatch(
                 priority=args.priority,
                 estimated_tokens=args.estimated_tokens,
                 approval_mode=args.approval,
+                auto_commit=args.auto_commit,
                 max_retries=args.max_retries,
                 retry_delay_minutes=args.retry_delay,
                 recurrence_interval_days=_parse_recurrence_interval(args.repeat),
@@ -152,6 +166,7 @@ def _dispatch(
             priority=args.priority,
             estimated_tokens=args.estimated_tokens,
             approval_mode=args.approval,
+            auto_commit=args.auto_commit,
             max_retries=args.max_retries,
             retry_delay_minutes=args.retry_delay,
             recurrence_interval_days=(
@@ -181,7 +196,13 @@ def _dispatch(
             args.json,
         )
     if args.command == "list-tasks":
-        tasks = service.list(status=args.status)
+        tasks = service.list(
+            status=args.status,
+            project_path=args.project,
+            created_by=args.created_by,
+            creator_session_id=args.creator_session,
+            active=args.active,
+        )
         records = [_task_record(task) for task in tasks]
         return _json_or_text(records, _task_table(records), args.json)
     if args.command == "show-task":
@@ -191,6 +212,9 @@ def _dispatch(
         record = _task_record(task)
         record["recent_runs"] = [
             _run_record(run) for run in reversed(service.list_runs(task.id)[-5:])
+        ]
+        record["recent_events"] = [
+            _event_record(event) for event in service.list_events(task.id, limit=10)
         ]
         return _json_or_text(record, _task_details(record), args.json)
     if args.command == "review-task":
@@ -303,6 +327,51 @@ def _dispatch(
             f"작업 #{args.task_id}과 실행 기록을 삭제했습니다.",
             args.json,
         )
+    if args.command == "delete-tasks":
+        result = service.delete_project_tasks(
+            args.project,
+            created_by=args.created_by,
+            creator_session_id=args.creator_session,
+            statuses=args.status,
+        )
+        payload = {
+            "project_path": result.project_path,
+            "matched_count": result.matched_count,
+            "deleted_ids": list(result.deleted_ids),
+            "skipped": [
+                {"id": item.id, "title": item.title, "reason": item.reason}
+                for item in result.skipped
+            ],
+        }
+        lines = [
+            f"프로젝트 작업 {result.matched_count}개 중 "
+            f"{len(result.deleted_ids)}개를 삭제했습니다.",
+        ]
+        lines.extend(
+            f"- 건너뜀 #{item.id} {item.title}: {item.reason}"
+            for item in result.skipped
+        )
+        return _json_or_text(payload, "\n".join(lines), args.json)
+    if args.command == "list-events":
+        events = service.list_events(
+            args.task_id,
+            project_path=args.project,
+            actor=args.event_actor,
+            limit=args.limit,
+        )
+        records = [_event_record(event) for event in events]
+        lines = ["EVENT  TASK  TIME                  ACTOR    ACTION     PROJECT  TITLE"]
+        lines.extend(
+            f"{record['id']:<6} #{record['task_id']:<4} "
+            f"{(record['created_at'] or '-'):<21} {record['actor']:<8} "
+            f"{record['action']:<10} {record['project_path']}  {record['task_title']}"
+            for record in records
+        )
+        return _json_or_text(
+            records,
+            "관리 이벤트가 없습니다." if not records else "\n".join(lines),
+            args.json,
+        )
     if args.command == "set-agent":
         view = agents.set_availability(
             args.agent,
@@ -320,7 +389,7 @@ def _dispatch(
     if args.command == "daily-summary":
         summary = service.daily_summary(_parse_local_date(args.date))
         payload = _daily_summary_record(summary)
-        return _json_or_text(payload, _daily_summary_text(payload), args.json)
+        return _json_or_text(payload, format_daily_summary(summary), args.json)
     if args.command == "plan-batch":
         return _plan_batch(args, service)
     if args.command == "split-task":
@@ -365,6 +434,8 @@ def _merged_draft(args: argparse.Namespace, service: TaskService) -> TaskDraft:
         title=current.title if args.title is None else args.title,
         prompt=current.prompt if args.prompt is None else args.prompt,
         project_path=current.project_path if args.project is None else args.project,
+        created_by=current.created_by,
+        creator_session_id=current.creator_session_id,
         agent_policy=current.agent_policy if args.agent is None else args.agent,
         priority=current.priority if args.priority is None else args.priority,
         estimated_tokens=(
@@ -373,6 +444,9 @@ def _merged_draft(args: argparse.Namespace, service: TaskService) -> TaskDraft:
             else args.estimated_tokens
         ),
         approval_mode=current.approval_mode if args.approval is None else args.approval,
+        auto_commit=(
+            current.auto_commit if args.auto_commit is None else args.auto_commit
+        ),
         max_retries=current.max_retries if args.max_retries is None else args.max_retries,
         retry_delay_minutes=(
             current.retry_delay_minutes if args.retry_delay is None else args.retry_delay
@@ -403,6 +477,7 @@ def _queue_status(
     payload = {
         "global_auto_run": config.app.global_auto_run,
         "worktree_parallel_enabled": config.scheduler.worktree_parallel_enabled,
+        "auto_commit_enabled": config.scheduler.auto_commit_enabled,
         "worktrees_dir": str(config.app.worktrees_dir),
         "allowed_project_roots": [str(root) for root in config.app.allowed_project_roots],
         "task_counts": dict(sorted(counts.items())),
@@ -415,6 +490,7 @@ def _queue_status(
         "worktree_parallel_enabled: "
         f"{str(config.scheduler.worktree_parallel_enabled).lower()}",
         f"worktrees_dir: {config.app.worktrees_dir}",
+        f"auto_commit_enabled: {str(config.scheduler.auto_commit_enabled).lower()}",
         "allowed_project_roots: "
         + (", ".join(payload["allowed_project_roots"]) or "(비어 있음 — 실행 차단됨)"),
         "task_counts: "
@@ -575,10 +651,13 @@ def _template_record(template: object) -> dict[str, Any]:
         "title": template.title,
         "prompt": template.prompt,
         "project_path": template.project_path,
+        "created_by": _enum_value(template.created_by),
+        "creator_session_id": template.creator_session_id,
         "agent_policy": _enum_value(template.agent_policy),
         "priority": template.priority,
         "estimated_tokens": template.estimated_tokens,
         "approval_mode": _enum_value(template.approval_mode),
+        "auto_commit": bool(template.auto_commit),
         "max_retries": template.max_retries,
         "retry_delay_minutes": template.retry_delay_minutes,
         "recurrence_interval_days": template.recurrence_interval_days,
@@ -595,10 +674,13 @@ def _draft_record(draft: TaskDraft) -> dict[str, Any]:
         "title": draft.title,
         "prompt": draft.prompt,
         "project_path": str(draft.project_path),
+        "created_by": _enum_value(draft.created_by),
+        "creator_session_id": draft.creator_session_id,
         "agent_policy": draft.agent_policy.value,
         "priority": draft.priority,
         "estimated_tokens": draft.estimated_tokens,
         "approval_mode": draft.approval_mode.value,
+        "auto_commit": bool(draft.auto_commit),
         "max_retries": draft.max_retries,
         "retry_delay_minutes": draft.retry_delay_minutes,
         "recurrence_interval_days": draft.recurrence_interval_days,
@@ -680,6 +762,8 @@ def _task_record(task: object) -> dict[str, Any]:
         "title": task.title,
         "prompt": task.prompt,
         "project_path": task.project_path,
+        "created_by": _enum_value(task.created_by),
+        "creator_session_id": task.creator_session_id,
         "agent_policy": _enum_value(task.agent_policy),
         "assigned_agent": _enum_value(task.assigned_agent),
         "fallback_agent": _enum_value(task.fallback_agent),
@@ -687,6 +771,7 @@ def _task_record(task: object) -> dict[str, Any]:
         "estimated_tokens": int(task.estimated_tokens),
         "status": _enum_value(task.status),
         "approval_mode": _enum_value(task.approval_mode),
+        "auto_commit": bool(task.auto_commit),
         "max_retries": int(task.max_retries),
         "retry_count": int(task.retry_count),
         "retry_delay_minutes": int(task.retry_delay_minutes),
@@ -738,6 +823,23 @@ def _run_record(run: object) -> dict[str, Any]:
         "fallback_to_agent": _enum_value(run.fallback_to_agent),
         "worktree_path": run.worktree_path,
         "worktree_branch": run.worktree_branch,
+        "auto_commit_hash": run.auto_commit_hash,
+        "auto_commit_result": run.auto_commit_result,
+    }
+
+
+def _event_record(event: object) -> dict[str, Any]:
+    return {
+        "id": int(event.id),
+        "task_id": int(event.task_id),
+        "task_created_at": _utc_iso(event.task_created_at),
+        "action": _enum_value(event.action),
+        "actor": _enum_value(event.actor),
+        "actor_session_id": event.actor_session_id,
+        "project_path": event.project_path,
+        "task_title": event.task_title,
+        "details": dict(event.details),
+        "created_at": _utc_iso(event.created_at),
     }
 
 
@@ -800,65 +902,18 @@ def _daily_task_counts(value: object) -> dict[str, int]:
     }
 
 
-def _daily_summary_text(payload: dict[str, Any]) -> str:
-    totals = payload["totals"]
-    lines = [
-        f"일일 작업 요약: {payload['date']} (로컬)",
-        _daily_counts_text("전체", totals),
-        "사용량 제한 대기 발생: "
-        + ", ".join(
-            f"{agent}={'예' if occurred else '아니오'}"
-            for agent, occurred in totals["usage_limit_wait_occurred"].items()
-        ),
-    ]
-    if not payload["projects"]:
-        lines.append("프로젝트 활동이 없습니다.")
-        return "\n".join(lines)
-    for project in payload["projects"]:
-        lines.extend(("", project["project_path"], _daily_counts_text("  결과", project)))
-        branches = ", ".join(project["worktree_branches"]) or "-"
-        lines.append(f"  worktree 브랜치: {branches}")
-        if project["failed_tasks"]:
-            lines.append("  실패 작업:")
-            lines.extend(
-                f"    #{task['id']} {task['title']} "
-                f"(오류: {task['last_error_type'] or '-'})"
-                for task in project["failed_tasks"]
-            )
-    return "\n".join(lines)
-
-
-def _daily_counts_text(label: str, value: dict[str, Any]) -> str:
-    counts = value["task_counts"]
-    agents = value["agent_run_counts"]
-    return (
-        f"{label}: 완료={counts['succeeded']} 실패={counts['failed']} "
-        f"차단={counts['blocked']} 취소={counts['cancelled']} · "
-        f"실행 시간={_duration_text(value['total_runtime_seconds'])} · "
-        f"실행 claude={agents['claude']} codex={agents['codex']} · "
-        f"fallback={value['fallback_count']}"
-    )
-
-
-def _duration_text(seconds: float) -> str:
-    rounded = max(0, round(seconds))
-    hours, remainder = divmod(rounded, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-
 def _task_table(records: list[dict[str, Any]]) -> str:
     if not records:
         return "작업이 없습니다."
     rows = [
-        "ID  STATUS       AGENT   PRIORITY  REVIEW       REPEAT        SPLIT             TITLE"
+        "ID  STATUS       AGENT   PRIORITY  REPEAT        CREATOR  PROJECT  TITLE"
     ]
     rows.extend(
         f"{record['id']:<3} {record['status']:<12} "
         f"{(record['assigned_agent'] or record['agent_policy']):<7} "
-        f"{record['priority']:<8}  {_review_text(record):<11}  "
-        f"{(record['recurrence'] or '-'):<12}  "
-        f"{_split_relation_text(record):<16}  {record['title']}"
+        f"{record['priority']:<8}  {(record['recurrence'] or '-'):<12}  "
+        f"{record['created_by']:<7}  "
+        f"{record['project_path']}  {record['title']}"
         for record in records
     )
     return "\n".join(rows)
@@ -884,7 +939,7 @@ def _task_details(record: dict[str, Any]) -> str:
     lines = [
         f"{key}: {_text_value(value)}"
         for key, value in record.items()
-        if key != "recent_runs"
+        if key not in {"recent_runs", "recent_events"}
     ]
     lines.append("recent_runs:")
     runs = record["recent_runs"]
@@ -904,8 +959,24 @@ def _task_details(record: dict[str, Any]) -> str:
                 if run["worktree_path"]
                 else ""
             )
+            + (
+                "auto_commit="
+                f"{run['auto_commit_hash'] or run['auto_commit_result']} "
+                if run["auto_commit_hash"] or run["auto_commit_result"]
+                else ""
+            )
             + f"result_summary={_text_value(run['result_summary'])}"
             for run in runs
+        )
+    lines.append("recent_events:")
+    events = record["recent_events"]
+    if not events:
+        lines.append("  (없음)")
+    else:
+        lines.extend(
+            f"  - {event['created_at']} {event['actor']} {event['action']} "
+            f"{_text_value(event['details'])}"
+            for event in events
         )
     return "\n".join(lines)
 

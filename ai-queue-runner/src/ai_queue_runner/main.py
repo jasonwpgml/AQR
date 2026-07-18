@@ -25,6 +25,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", type=Path, default=None, help="path to config.toml")
     parser.add_argument(
+        "--actor",
+        choices=("unknown", "user", "claude", "codex", "system"),
+        default="user",
+        help="identity recorded for task management events",
+    )
+    parser.add_argument(
+        "--actor-session",
+        metavar="ID",
+        help="optional caller session ID recorded with task management events",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="print subcommand output as machine-readable JSON",
@@ -70,6 +81,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_task.add_argument("--approval", choices=("auto", "confirm"), default="confirm")
     add_task.add_argument(
+        "--auto-commit",
+        action="store_true",
+        help="request an automatic Git commit after a successful run",
+    )
+    add_task.add_argument(
         "--not-before",
         metavar="YYYY-MM-DD HH:MM",
         help="local time; stored internally as UTC",
@@ -108,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     save_template.add_argument("--priority", type=int, default=50, metavar="0-100")
     save_template.add_argument("--estimated-tokens", type=int, default=0, metavar="N")
     save_template.add_argument("--approval", choices=("auto", "confirm"), default="confirm")
+    save_template.add_argument("--auto-commit", action="store_true")
     save_template.add_argument("--not-before", metavar="YYYY-MM-DD HH:MM")
     save_template.add_argument("--max-retries", type=int, default=2, metavar="N")
     save_template.add_argument("--retry-delay", type=int, default=10, metavar="MINUTES")
@@ -149,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     add_from_template.add_argument("--priority", type=int, metavar="0-100")
     add_from_template.add_argument("--estimated-tokens", type=int, metavar="N")
     add_from_template.add_argument("--approval", choices=("auto", "confirm"))
+    _add_auto_commit_toggle(add_from_template)
     add_from_template.add_argument("--not-before", metavar="YYYY-MM-DD HH:MM")
     add_from_template.add_argument("--max-retries", type=int, metavar="N")
     add_from_template.add_argument("--retry-delay", type=int, metavar="MINUTES")
@@ -165,7 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     _add_subcommand_json_option(add_from_template)
 
     list_tasks = subcommands.add_parser("list-tasks", help="list queue tasks")
-    list_tasks.add_argument(
+    list_mode = list_tasks.add_mutually_exclusive_group()
+    list_mode.add_argument(
         "--status",
         choices=(
             "waiting",
@@ -179,6 +198,17 @@ def main(argv: list[str] | None = None) -> int:
             "archived",
         ),
     )
+    list_mode.add_argument(
+        "--active",
+        action="store_true",
+        help="show waiting, reserved, running, retry-wait, and blocked tasks",
+    )
+    list_tasks.add_argument("--project", type=Path, help="filter by absolute project path")
+    list_tasks.add_argument(
+        "--created-by",
+        choices=("unknown", "user", "claude", "codex", "system"),
+    )
+    list_tasks.add_argument("--creator-session", metavar="ID")
     _add_subcommand_json_option(list_tasks)
 
     show_task = subcommands.add_parser("show-task", help="show one task and recent runs")
@@ -226,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     update_task.add_argument("--priority", type=int, metavar="0-100")
     update_task.add_argument("--estimated-tokens", type=int, metavar="N")
     update_task.add_argument("--approval", choices=("auto", "confirm"))
+    _add_auto_commit_toggle(update_task)
     update_task.add_argument(
         "--not-before",
         metavar="YYYY-MM-DD HH:MM",
@@ -290,6 +321,47 @@ def main(argv: list[str] | None = None) -> int:
     )
     delete_task.add_argument("task_id", type=int, metavar="ID")
     _add_subcommand_json_option(delete_task)
+
+    delete_tasks = subcommands.add_parser(
+        "delete-tasks",
+        help="delete every eligible task in an explicit project scope",
+    )
+    delete_tasks.add_argument(
+        "--project", type=Path, required=True, help="absolute project path"
+    )
+    delete_tasks.add_argument(
+        "--created-by",
+        choices=("unknown", "user", "claude", "codex", "system"),
+    )
+    delete_tasks.add_argument("--creator-session", metavar="ID")
+    delete_tasks.add_argument(
+        "--status",
+        action="append",
+        choices=(
+            "waiting",
+            "succeeded",
+            "failed",
+            "retry_wait",
+            "blocked",
+            "cancelled",
+            "archived",
+        ),
+        help="repeat to limit deletion to selected statuses",
+    )
+    _add_subcommand_json_option(delete_tasks)
+
+    list_events = subcommands.add_parser(
+        "list-events", help="list durable task management events"
+    )
+    list_events.add_argument("--task-id", type=int, metavar="ID")
+    list_events.add_argument("--project", type=Path)
+    list_events.add_argument(
+        "--actor",
+        dest="event_actor",
+        choices=("unknown", "user", "claude", "codex", "system"),
+    )
+    list_events.add_argument("--limit", type=int, default=100, metavar="N")
+    _add_subcommand_json_option(list_events)
 
     set_agent = subcommands.add_parser(
         "set-agent", help="set manual agent availability"
@@ -415,6 +487,23 @@ def _add_subcommand_json_option(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         default=argparse.SUPPRESS,
         help="print this command's output as machine-readable JSON",
+    )
+
+
+def _add_auto_commit_toggle(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--auto-commit",
+        dest="auto_commit",
+        action="store_true",
+        default=None,
+        help="request an automatic Git commit after a successful run",
+    )
+    group.add_argument(
+        "--no-auto-commit",
+        dest="auto_commit",
+        action="store_false",
+        help="disable automatic Git commit for the task",
     )
 
 

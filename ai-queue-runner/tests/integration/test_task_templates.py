@@ -6,6 +6,7 @@ from ai_queue_runner.application.task_template_service import (
     TaskTemplateDraft,
     TaskTemplateService,
 )
+from ai_queue_runner.domain.enums import TaskCreator
 from ai_queue_runner.infrastructure.database import (
     create_db_engine,
     init_db,
@@ -31,11 +32,14 @@ def test_template_save_overwrite_get_list_delete_roundtrip(templates) -> None:
             agent_policy="codex",
             priority=70,
             estimated_tokens=12000,
+            auto_commit=True,
             tags=["implementation"],
         ),
     )
     assert overwritten is False
     assert created.name == "feature"
+    assert created.auto_commit is True
+    assert created.created_by is TaskCreator.USER
     assert templates.get("feature") == created
     assert templates.list() == [created]
 
@@ -80,6 +84,8 @@ def test_template_render_substitutes_rejects_missing_and_prioritizes_overrides(
     )
     assert rendered.title == "검색 구현"
     assert rendered.prompt == "검색 구현 후 pytest/ruff 통과"
+    assert rendered.auto_commit is False
+    assert rendered.created_by is TaskCreator.USER
 
     with pytest.raises(ValueError, match="missing template variables: check"):
         templates.render("feature", {"feature": "검색"})

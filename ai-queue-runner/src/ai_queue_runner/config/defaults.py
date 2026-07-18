@@ -54,6 +54,8 @@ class SchedulerSection(StrictModel):
     project_lock_mode: Literal["exclusive"] = "exclusive"
     worktree_parallel_enabled: bool = False
     worktree_git_timeout_seconds: int = Field(default=30, ge=1)
+    auto_commit_enabled: bool = False
+    auto_commit_git_timeout_seconds: int = Field(default=30, ge=1)
 
 
 class AgentSection(StrictModel):

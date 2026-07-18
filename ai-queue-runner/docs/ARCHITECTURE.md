@@ -13,7 +13,7 @@ flowchart TB
     end
 
     subgraph APP["application/ · 유스케이스"]
-        TASK[TaskService\nCRUD·원자적 배치·작업 분할·품질 평가·일일 집계]
+        TASK[TaskService\nCRUD·범위 조회/삭제·관리 이벤트·분할·평가·일일 집계]
         TEMPLATE[TaskTemplateService\n저장·치환·작업 초안 생성]
         PLAN[WorkloadPlanning\n토큰 예산·결정적 분배]
         AGENT[AgentService]
@@ -39,6 +39,7 @@ flowchart TB
         ADAPTER[Claude/Codex Adapter]
         POLICY[허용 경로 정책]
         GIT[GitWorktreeManager\n결정적 생성·재사용·안전 정리]
+        GITCOMMIT[GitAutoCommitter\nclean 사전검사·성공 변경 커밋]
         OPS[백업·Windows 시작 프로그램]
     end
 
@@ -56,6 +57,7 @@ flowchart TB
     EXEC --> PROC
     EXEC --> ADAPTER
     EXEC --> POLICY
+    EXEC --> GITCOMMIT
     WORKTREE --> REPO
     WORKTREE --> GIT
     TASK --> REPO
@@ -77,6 +79,8 @@ erDiagram
         text title
         text prompt
         text project_path
+        text created_by
+        text creator_session_id
         text agent_policy
         text assigned_agent
         text fallback_agent
@@ -84,6 +88,7 @@ erDiagram
         int estimated_tokens
         text status
         text approval_mode
+        boolean auto_commit
         int max_retries
         int retry_count
         int recurrence_interval_days
@@ -123,6 +128,8 @@ erDiagram
         text fallback_to_agent
         text worktree_path
         text worktree_branch
+        text auto_commit_hash
+        text auto_commit_result
     }
     task_reviews {
         int id PK
@@ -137,10 +144,13 @@ erDiagram
         text title
         text prompt
         text project_path
+        text created_by
+        text creator_session_id
         text agent_policy
         int priority
         int estimated_tokens
         text approval_mode
+        boolean auto_commit
         int max_retries
         int retry_delay_minutes
         int recurrence_interval_days
@@ -150,6 +160,18 @@ erDiagram
         datetime created_at
         datetime updated_at
     }
+    task_events {
+        int id PK
+        int task_id
+        datetime task_created_at
+        text action
+        text actor
+        text actor_session_id
+        text project_path
+        text task_title
+        json details_json
+        datetime created_at
+    }
     settings {
         text key PK
         json value_json
@@ -158,6 +180,7 @@ erDiagram
     tasks ||--o{ task_dependencies : "선행 작업"
     tasks ||--o{ task_runs : "실행 기록"
     tasks ||--o{ task_reviews : "품질 평가 이력"
+    tasks ||..o{ task_events : "논리 ID 스냅샷 (FK 없음)"
     tasks o|--o| tasks : "다음 반복 회차"
     tasks o|--o{ tasks : "분할 원본과 하위 작업"
     tasks o|--o{ tasks : "평가 실패 원본과 재작업"
@@ -184,6 +207,14 @@ worktree 경로·브랜치를 추가합니다. 작업 행은 현재/재시도 �
 `project_path`는 템플릿 저장 시 nullable이지만 작업 생성 시 `TaskDraft`와 허용 경로 정책을
 통과해야 합니다. `dependency_ids_json`은 기존 작업 의존만 저장하며 배치 전용 형제 인덱스는
 템플릿 계약에 포함하지 않습니다.
+스키마 v9는 `tasks`와 `task_templates`에 작업별 `auto_commit` opt-in을 추가하고,
+`task_runs`에 성공한 커밋 해시 또는 생략·실패 사유를 저장합니다. 기존 작업과 템플릿은
+모두 false로 마이그레이션되므로 전역 설정만 켜도 기존 큐가 갑자기 커밋되지 않습니다.
+스키마 v10은 작업과 템플릿에 `created_by`·`creator_session_id`를 추가하고 영구 관리 이력
+`task_events`를 도입합니다. 기존 행은 사실과 다른 소유자를 추정하지 않고 `unknown`으로
+이관합니다. 이벤트는 작업 ID·최초 생성 시각·프로젝트·제목을 스냅샷으로 가지며 의도적으로
+외래 키를 두지 않아 작업 영구 삭제 후에도 남습니다. DB 초기화는 스키마 검사 전
+`BEGIN IMMEDIATE` 쓰기 잠금을 획득해 여러 AI CLI의 동시 마이그레이션을 직렬화합니다.
 
 ## 3. 작업 상태 전이
 
@@ -228,11 +259,15 @@ flowchart TD
     PREP -- 성공 --> APPROVE{전역 자동 실행 AND 작업 auto?}
     PREP -- 비Git/생성 실패 --> WAIT[waiting 복구\nexclusive 직렬 폴백]
     APPROVE -- 아니오 --> USER[승인 창]
-    USER -- 승인 --> RUN
+    USER -- 승인 --> PREFLIGHT
     USER -- 거절 --> WAIT
-    APPROVE -- 예 --> RUN[CLI 실행]
+    APPROVE -- 예 --> PREFLIGHT{전역 auto-commit AND 작업 opt-in?}
+    PREFLIGHT -- 아니오 --> RUN[CLI 실행]
+    PREFLIGHT -- 예 --> CLEAN[실행 cwd Git clean 스냅샷]
+    CLEAN --> RUN
     RUN --> RESULT{결과 분류}
     RESULT --> DONE[succeeded/failed/retry_wait/blocked]
+    DONE -->|succeeded + opt-in| COMMIT[변경 commit 또는 생략·실패 사유 기록]
     DONE -->|succeeded + 반복 규칙| NEXT[다음 회차 waiting 생성\nnot_before = 완료 시각 + N일]
     RESULT --> LIMIT[사용량 제한: agent cooldown + task waiting]
     RESULT --> FALLBACK[Any 재시도: 반대 AI 우선 + 실행 기록]
@@ -265,7 +300,7 @@ flowchart TD
 반복 규칙은 nullable 양의 일수로 표현하며 1일은 매일, 7일은 매주, 나머지는 N일
 간격입니다. `ExecutionService`가 성공 상태와 완료 시각을 기록한 뒤 같은 DB 트랜잭션에서
 `RecurrenceService`를 호출합니다. 후속 작업은 제목·프롬프트·프로젝트·AI 정책·우선순위·
-토큰 추정·승인·재시도·태그·선행 작업·반복 규칙을 복사하고 실행 상태와 재시도 횟수는
+토큰 추정·승인·자동 커밋·재시도·태그·선행 작업·반복 규칙을 복사하고 실행 상태와 재시도 횟수는
 초기화합니다. 성공과 후속 작업이 함께 커밋되므로 크래시 뒤 둘 중 하나만 남지 않으며,
 `recurrence_source_task_id` 유일 제약과 기존 행 조회가 이벤트 재처리를 멱등하게 만듭니다.
 실패·차단·취소 경로에서는 이 서비스를 호출하지 않습니다. 후속 작업의 `not_before`는
@@ -293,18 +328,26 @@ flowchart TD
   `TaskDraft`를 만들며, 오버라이드가 저장값보다 우선합니다. `--dry-run`도 경로·의존성을
   검증하지만 `tasks`를 쓰지 않습니다.
 - `cleanup-worktree ID`는 종료 상태 작업만 받으며 dirty 파일이나 프로젝트 HEAD에 포함되지 않은 브랜치 커밋이 있으면 삭제를 거부합니다. 통과해도 worktree만 제거하고 브랜치와 실행 이력은 남깁니다.
+- 모든 CLI 관리자는 전역 `--actor`와 `--actor-session`으로 호출 주체를 기록할 수 있습니다.
+  `list-tasks`는 프로젝트·생성자·세션·활성 상태 필터를 제공하고, `delete-tasks`는 반드시
+  명시된 프로젝트 안에서 삭제 가능한 작업을 관계 역순으로 지운 뒤 건너뛴 사유를 반환합니다.
+- 생성·수정·취소·재시도·맨 위 이동·보관·평가·분할·삭제는 `task_events`에 기록됩니다.
+  `show-task`와 `list-events`가 현재 작업과 이미 삭제된 작업의 관리 이력을 노출합니다.
+- 자동 커밋은 전역·작업 이중 opt-in일 때만 실행 전 cwd의 clean 상태를 캡처합니다. 성공
+  상태와 반복 후속 작업을 먼저 DB에 커밋한 뒤 Git 커밋을 시도하므로 Git 실패는 작업
+  상태를 되돌리지 않습니다. 일반 checkout과 worktree에 같은 사전 dirty 규칙을 적용합니다.
 
 ## 6. 주요 파일
 
 | 경로 | 역할 |
 |---|---|
 | `application/runtime.py` | APScheduler 틱, asyncio 실행 루프, 승인·거절·중단 |
-| `application/task_service.py` | 작업 CRUD·원자적 배치/분할·의존 승계·복제·재시도·완료 보관·프로젝트별 일일 집계 |
+| `application/task_service.py` | 작업 CRUD·출처/관리 이벤트·프로젝트 범위 조회/삭제·원자적 배치/분할·복제·재시도·일일 집계 |
 | `application/task_template_service.py` | DB 작업 템플릿 CRUD·title/prompt 변수 치환·TaskDraft 생성 |
 | `application/workload_planning.py` | 명시적 토큰 예산·형제 의존 DAG 검증·결정적 Claude/Codex 분배 |
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |
-| `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback 결정·이력 기록 |
+| `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback·자동 커밋 결정과 이력 기록 |
 | `application/worktree_service.py` | 격리 예약 준비·실패 시 exclusive 폴백·완료 worktree 정리 정책 |
 | `application/recurrence_service.py` | 성공한 반복 작업의 다음 회차를 원본 ID 기준으로 멱등 생성 |
 | `application/recovery_service.py` | 오래된 예약·재시도·고아 PID 복구 |
@@ -312,6 +355,7 @@ flowchart TD
 | `infrastructure/process_runner.py` | 비동기 subprocess, stdin, 로그, 취소, 타임아웃 |
 | `infrastructure/path_policy.py` | 프로젝트 허용 루트 검증 |
 | `infrastructure/git_worktrees.py` | Git worktree/브랜치 결정적 생성·재사용과 미병합 보호 정리 |
+| `infrastructure/git_auto_commit.py` | 실행 전 clean 검사, 성공 변경 staging·커밋, 해시/사유 결과 |
 | `infrastructure/backup.py` | SQLite 온라인 백업과 무결성 검사 |
 | `config/exporter.py` | 유효 설정의 결정적 TOML 내보내기 |
 | `infrastructure/windows_startup.py` | HKCU Run 시작 프로그램 등록 |
@@ -322,6 +366,7 @@ flowchart TD
 ## 7. 복구와 운영
 
 - SQLite 연결마다 foreign key와 WAL을 활성화합니다.
+- 테이블 생성·버전 추론·마이그레이션은 하나의 SQLite writer transaction에서 실행합니다.
 - 예약 타임아웃, 재시도 승격, 에이전트 쿨다운 해제는 매 틱 먼저 수행합니다.
 - 시작 시 `running` 작업의 마지막 PID를 검사하고 대기 복구 또는 실패 처리를 사용자에게 묻습니다.
 - 복구된 작업의 `use_worktree`와 경로는 유지하고 다음 예약에서 같은 브랜치/check-out을 재검증·재사용합니다.

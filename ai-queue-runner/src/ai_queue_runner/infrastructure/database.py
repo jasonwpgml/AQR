@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine, event, text
+from sqlalchemy import Connection, Engine, create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -189,6 +189,102 @@ def _migrate_v7_to_v8(session: Session) -> None:
     )
 
 
+def _migrate_v8_to_v9(session: Session) -> None:
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "auto_commit" not in task_columns:
+        session.execute(
+            text("ALTER TABLE tasks ADD COLUMN auto_commit BOOLEAN NOT NULL DEFAULT 0")
+        )
+
+    run_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(task_runs)")).mappings()
+    }
+    if "auto_commit_hash" not in run_columns:
+        session.execute(text("ALTER TABLE task_runs ADD COLUMN auto_commit_hash TEXT"))
+    if "auto_commit_result" not in run_columns:
+        session.execute(text("ALTER TABLE task_runs ADD COLUMN auto_commit_result TEXT"))
+
+    template_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(task_templates)")).mappings()
+    }
+    if "auto_commit" not in template_columns:
+        session.execute(
+            text(
+                "ALTER TABLE task_templates ADD COLUMN auto_commit BOOLEAN NOT NULL DEFAULT 0"
+            )
+        )
+
+
+def _migrate_v9_to_v10(session: Session) -> None:
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "created_by" not in task_columns:
+        session.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN created_by VARCHAR(7) NOT NULL "
+                "DEFAULT 'unknown' CHECK (created_by IN "
+                "('unknown', 'user', 'claude', 'codex', 'system'))"
+            )
+        )
+    if "creator_session_id" not in task_columns:
+        session.execute(text("ALTER TABLE tasks ADD COLUMN creator_session_id TEXT"))
+
+    template_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(task_templates)")).mappings()
+    }
+    if "created_by" not in template_columns:
+        session.execute(
+            text(
+                "ALTER TABLE task_templates ADD COLUMN created_by VARCHAR(7) NOT NULL "
+                "DEFAULT 'unknown' CHECK (created_by IN "
+                "('unknown', 'user', 'claude', 'codex', 'system'))"
+            )
+        )
+    if "creator_session_id" not in template_columns:
+        session.execute(
+            text("ALTER TABLE task_templates ADD COLUMN creator_session_id TEXT")
+        )
+
+    session.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS task_events ("
+            "id INTEGER NOT NULL PRIMARY KEY, "
+            "task_id INTEGER NOT NULL, "
+            "task_created_at DATETIME NOT NULL, "
+            "action VARCHAR(9) NOT NULL CHECK (action IN "
+            "('created', 'updated', 'cancelled', 'retried', 'promoted', "
+            "'archived', 'reviewed', 'split', 'deleted')), "
+            "actor VARCHAR(7) NOT NULL CHECK (actor IN "
+            "('unknown', 'user', 'claude', 'codex', 'system')), "
+            "actor_session_id TEXT, "
+            "project_path TEXT NOT NULL, "
+            "task_title TEXT NOT NULL, "
+            "details_json JSON NOT NULL, "
+            "created_at DATETIME NOT NULL)"
+        )
+    )
+    session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_task_events_task_id "
+            "ON task_events(task_id)"
+        )
+    )
+    session.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_task_events_project_path "
+            "ON task_events(project_path)"
+        )
+    )
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -197,6 +293,8 @@ _MIGRATIONS = {
     5: _migrate_v5_to_v6,
     6: _migrate_v6_to_v7,
     7: _migrate_v7_to_v8,
+    8: _migrate_v8_to_v9,
+    9: _migrate_v9_to_v10,
 }
 
 
@@ -222,30 +320,73 @@ def create_db_engine(db_path: Path | str) -> Engine:
 
 def init_db(engine: Engine) -> None:
     """Create tables and stamp/verify the schema version."""
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        stored = session.get(Setting, "schema_version")
-        if stored is None:
-            session.add(Setting(key="schema_version", value=SCHEMA_VERSION))
-            session.commit()
-            return
-        version = int(stored.value)
-        if version > SCHEMA_VERSION:
-            raise RuntimeError(
-                f"database schema v{version} is newer than app schema v{SCHEMA_VERSION}"
-            )
-        # AIDEV-NOTE: create_all() never adds columns to existing SQLite tables;
-        # migrations must be safe to retry before advancing the stored version.
-        while version < SCHEMA_VERSION:
-            migration = _MIGRATIONS.get(version)
-            if migration is None:
+    with engine.connect() as connection:
+        # AIDEV-NOTE: every process takes the same SQLite writer lock before schema
+        # inspection. Otherwise two AI CLI reads can race the same ALTER TABLE migration.
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        had_tasks = inspect(connection).has_table("tasks")
+        legacy_version = None
+        if had_tasks:
+            legacy_version = _infer_legacy_schema_version(connection)
+        Base.metadata.create_all(connection)
+        with Session(bind=connection) as session:
+            stored = session.get(Setting, "schema_version")
+            if stored is None:
+                version = legacy_version if legacy_version is not None else SCHEMA_VERSION
+                stored = Setting(key="schema_version", value=version)
+                session.add(stored)
+            else:
+                version = int(stored.value)
+            if version > SCHEMA_VERSION:
                 raise RuntimeError(
-                    f"no migration path from schema v{version} to v{SCHEMA_VERSION}"
+                    f"database schema v{version} is newer than app schema v{SCHEMA_VERSION}"
                 )
-            migration(session)
-            version += 1
-            stored.value = version
-            session.commit()
+            # AIDEV-NOTE: create_all() never adds columns to existing SQLite tables;
+            # migrations must be safe to retry before advancing the stored version.
+            while version < SCHEMA_VERSION:
+                migration = _MIGRATIONS.get(version)
+                if migration is None:
+                    raise RuntimeError(
+                        f"no migration path from schema v{version} to v{SCHEMA_VERSION}"
+                    )
+                migration(session)
+                version += 1
+                stored.value = version
+            session.flush()
+            connection.commit()
+
+
+def _infer_legacy_schema_version(session: Session | Connection) -> int:
+    """Infer old packaged DBs that predate the schema_version setting."""
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    table_names = {
+        row["name"]
+        for row in session.execute(
+            text("SELECT name FROM sqlite_master WHERE type = 'table'")
+        ).mappings()
+    }
+    if "created_by" in task_columns and "task_events" in table_names:
+        return 10
+    if "auto_commit" in task_columns:
+        return 9
+    if "task_templates" in table_names:
+        return 8
+    if "rework_of_task_id" in task_columns and "task_reviews" in table_names:
+        return 7
+    if "split_parent_task_id" in task_columns:
+        return 6
+    if "use_worktree" in task_columns:
+        return 5
+    if "recurrence_interval_days" in task_columns:
+        return 4
+    if "fallback_agent" in task_columns:
+        return 3
+    if "estimated_tokens" in task_columns:
+        return 2
+    return 1
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:

@@ -25,6 +25,8 @@ from ai_queue_runner.domain.enums import (
     AgentStatus,
     ApprovalMode,
     ErrorType,
+    TaskCreator,
+    TaskEventAction,
     TaskStatus,
 )
 from ai_queue_runner.infrastructure.database import (
@@ -53,6 +55,8 @@ def make_task(task_id: int = 1, **overrides):
         "title": "테스트 작성",
         "prompt": "회귀 테스트를 추가한다.",
         "project_path": "C:/work/sample",
+        "created_by": TaskCreator.USER,
+        "creator_session_id": None,
         "agent_policy": AgentPolicy.CODEX,
         "assigned_agent": None,
         "fallback_agent": None,
@@ -60,6 +64,7 @@ def make_task(task_id: int = 1, **overrides):
         "estimated_tokens": 0,
         "status": TaskStatus.WAITING,
         "approval_mode": ApprovalMode.CONFIRM,
+        "auto_commit": False,
         "max_retries": 2,
         "retry_count": 0,
         "retry_delay_minutes": 10,
@@ -87,11 +92,12 @@ def test_task_table_model_exposes_compact_korean_projection(app):
     model = TaskTableModel([make_task()])
 
     assert model.rowCount() == 1
-    assert model.columnCount() == 5
+    assert model.columnCount() == 6
     assert model.data(model.index(0, TaskColumn.PRIORITY)) == 70
     assert model.data(model.index(0, TaskColumn.AGENT)) == "Codex"
     assert model.data(model.index(0, TaskColumn.STATUS)) == "대기"
     assert model.data(model.index(0, TaskColumn.PROJECT)) == "sample"
+    assert model.data(model.index(0, TaskColumn.CREATOR)) == "user"
     assert model.data(model.index(0, 0), Qt.ItemDataRole.UserRole).id == 1
 
 
@@ -128,6 +134,7 @@ def test_task_dialog_validates_and_builds_draft_with_dependencies(app, tmp_path)
     dialog.title_edit.setText("UI 연결")
     dialog.prompt_edit.setPlainText("작업 목록을 연결한다.")
     dialog.estimated_tokens_spin.setValue(12_000)
+    dialog.auto_commit_check.setChecked(True)
     dialog.dependencies_list.item(0).setCheckState(Qt.CheckState.Checked)
     draft = dialog.build_draft()
 
@@ -136,6 +143,7 @@ def test_task_dialog_validates_and_builds_draft_with_dependencies(app, tmp_path)
     assert draft.agent_policy is AgentPolicy.ANY
     assert draft.approval_mode is ApprovalMode.CONFIRM
     assert draft.estimated_tokens == 12_000
+    assert draft.auto_commit is True
     assert draft.dependency_ids == [2]
 
 
@@ -468,7 +476,7 @@ class FakeTaskService:
             claude_usage_limit_wait_occurred=False,
             codex_usage_limit_wait_occurred=False,
         )
-        return SimpleNamespace(totals=totals, projects=())
+        return SimpleNamespace(local_date=selected_date, totals=totals, projects=())
 
     def list_runs(self, task_id):
         return []
@@ -689,6 +697,49 @@ def test_main_window_constructs_and_refreshes_from_services(app):
     window.close()
 
 
+def test_main_window_filters_projects_and_shows_creator_event_history(app):
+    first = make_task(
+        1,
+        project_path="C:/work/first",
+        created_by=TaskCreator.CODEX,
+        creator_session_id="session-9",
+    )
+    second = make_task(2, project_path="C:/work/second")
+    service = FakeTaskService([first, second])
+    service.list_events = lambda _task_id, limit=10: [
+        SimpleNamespace(
+            created_at=utcnow(),
+            actor=TaskCreator.CODEX,
+            action=TaskEventAction.CREATED,
+        )
+    ][:limit]
+    window = MainWindow(
+        service,
+        FakeAgentService(),
+        FakeRuntime(),
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+
+    window.project_filter.setCurrentIndex(
+        window.project_filter.findData(first.project_path)
+    )
+    app.processEvents()
+    assert [task.id for task in window.task_model.tasks] == [first.id]
+
+    window.task_table.selectRow(0)
+    app.processEvents()
+    details = window.details_view.toPlainText()
+    assert "생성자: codex" in details
+    assert "생성 세션: session-9" in details
+    assert "최근 관리 이력:" in details
+    assert "codex created" in details
+    window.close()
+
+
 def test_main_window_details_show_fallback_history(app):
     task = make_task(
         agent_policy=AgentPolicy.ANY,
@@ -723,6 +774,43 @@ def test_main_window_details_show_fallback_history(app):
     details = window.details_view.toPlainText()
     assert "Fallback 우선 AI: codex" in details
     assert "claude → codex (unknown)" in details
+    window.close()
+
+
+def test_main_window_details_show_auto_commit_history(app):
+    task = make_task(auto_commit=True)
+    service = FakeTaskService([task])
+    service.list_runs = lambda _task_id: [
+        SimpleNamespace(
+            attempt=1,
+            agent=AgentName.CODEX,
+            exit_code=0,
+            error_type=None,
+            fallback_to_agent=None,
+            auto_commit_hash="abc123",
+            auto_commit_result="committed",
+            stdout_path=None,
+            stderr_path=None,
+        )
+    ]
+    window = MainWindow(
+        service,
+        FakeAgentService(),
+        FakeRuntime(),
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+
+    window.task_table.selectRow(0)
+    app.processEvents()
+
+    details = window.details_view.toPlainText()
+    assert "자동 커밋 요청: 예" in details
+    assert "자동 커밋 이력:" in details
+    assert "abc123" in details
     window.close()
 
 
