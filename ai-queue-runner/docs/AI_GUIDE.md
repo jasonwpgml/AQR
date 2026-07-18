@@ -34,6 +34,10 @@
 | 명령 | 용도 | 주요 옵션/인자 |
 |---|---|---|
 | `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
+| `save-template NAME` | 단일 작업 초안 저장/덮어쓰기 | `--title --prompt` 필수, 나머지는 `add-task`와 같은 기본 필드. `--project`는 나중에 지정 가능 |
+| `list-templates` / `show-template NAME` | 템플릿 목록/상세 조회 | 이름순 목록, 저장된 TaskDraft 기본값 확인 |
+| `add-from-template NAME` | 변수 치환 후 작업 등록 | `--var key=value` 반복, TaskDraft 오버라이드, `--dry-run` |
+| `delete-template NAME` | 템플릿 삭제 | 작업과 이미 등록된 작업에는 영향 없음 |
 | `list-tasks` | 목록 조회 | `--status {waiting,reserved,running,succeeded,failed,retry_wait,blocked,cancelled,archived}` |
 | `show-task ID` | 상세 + 최근 5회 실행 | 반복·분할·재작업 관계와 최신 평가(`review_status`, `review_score`, `review_count`) 확인 |
 | `pending-reviews` | 성공했지만 미평가인 작업 조회 | `--project PATH`로 프로젝트 한정, 완료 시각 순 |
@@ -51,6 +55,48 @@
 | `archive-task ID` | 성공(succeeded) 작업 보관 | |
 | `delete-task ID` | 작업+실행 기록 영구 삭제 | reserved/running은 불가, 의존 작업 있으면 불가 |
 | `set-agent AGENT STATE` | 에이전트 수동 상태 설정 | `claude|codex` × `available|cooldown|disabled`, cooldown은 `--until "YYYY-MM-DD HH:MM"` |
+
+## 반복 작업 템플릿
+
+템플릿은 DB의 `task_templates`에 단일 작업 초안을 저장합니다. 같은 이름으로 다시
+`save-template`을 실행하면 기존 행을 덮어쓰며 텍스트 출력은 `덮어씀`, JSON 출력은
+`"overwritten": true`로 이를 알립니다. 저장 시 프로젝트를 생략할 수 있지만 실제 등록이나
+드라이런에는 템플릿 또는 `--project` 오버라이드로 유효한 프로젝트 경로가 있어야 합니다.
+
+```powershell
+# 자주 쓰는 구현+검증 작업 정의 저장
+... save-template feature `
+    --title "{feature} 구현" `
+    --prompt "{feature} 구현 후 {checks} 통과" `
+    --project "C:\projects\sample" --agent codex --priority 80 `
+    --estimated-tokens 20000 --approval auto --json
+
+# 조회
+... list-templates --json
+... show-template feature --json
+
+# DB에 작업을 만들지 않고 치환·경로·의존성까지 검증
+... add-from-template feature --var feature=검색 --var checks=pytest/ruff `
+    --priority 90 --dry-run --json
+
+# 실제 waiting 작업 등록
+... add-from-template feature --var feature=검색 --var checks=pytest/ruff --json
+
+# 삭제(이미 생성된 작업에는 영향 없음)
+... delete-template feature --json
+```
+
+자리표시자는 title/prompt의 단순한 `{변수명}`만 지원합니다. 변수명은 Python 식별자
+형식이며 속성 접근, 인덱스, 형식 지정(`:...`), 변환(`!r`)은 허용하지 않습니다.
+`--var`는 첫 `=`에서만 나누므로 값에는 `=`가 들어갈 수 있습니다. 필요한 변수가 하나라도
+없거나 치환 값/오버라이드 결과에 `{변수명}`이 남으면 누락 또는 미해결 변수명을 정렬해
+나열하고 등록을 거부합니다. 사용하지 않은 추가 변수는 무시합니다.
+
+`--title`, `--prompt`, `--project`, `--agent`, `--priority`, `--estimated-tokens`,
+`--approval`, `--not-before`, `--max-retries`, `--retry-delay`, `--repeat`, `--tag`,
+`--depends-on`은 저장값보다 우선합니다. title/prompt를 직접 오버라이드하면 해당 템플릿
+필드의 변수는 요구하지 않습니다. `--tag`와 `--depends-on`은 각각 전체 목록을 교체합니다.
+`--dry-run`도 실제 등록과 같은 `TaskService` 검증을 수행하지만 `tasks` 행을 만들지 않습니다.
 
 ## 완료 결과 배치 검토
 

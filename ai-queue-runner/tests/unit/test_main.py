@@ -162,6 +162,126 @@ def test_cli_add_task_uses_real_service_and_rejects_outside_path(tmp_path, capsy
     assert "Traceback" not in error
 
 
+def test_cli_template_crud_reports_overwrite(tmp_path, capsys):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    project = allowed_root / "project"
+    project.mkdir()
+
+    save = cli_args(
+        config_path,
+        "save-template",
+        "feature",
+        "--title",
+        "{feature} 구현",
+        "--prompt",
+        "{feature} 구현 후 pytest 통과",
+        "--project",
+        project,
+        "--agent",
+        "codex",
+        as_json=True,
+    )
+    assert main(save) == 0
+    assert json.loads(capsys.readouterr().out)["overwritten"] is False
+
+    save[save.index("{feature} 구현") + 0] = "{feature} 구현 및 검증"
+    assert main(save) == 0
+    assert json.loads(capsys.readouterr().out)["overwritten"] is True
+
+    assert main(cli_args(config_path, "list-templates", as_json=True)) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert [template["name"] for template in listed] == ["feature"]
+
+    assert main(cli_args(config_path, "show-template", "feature", as_json=True)) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["title"] == "{feature} 구현 및 검증"
+    assert shown["agent_policy"] == "codex"
+
+    assert main(cli_args(config_path, "delete-template", "feature", as_json=True)) == 0
+    assert json.loads(capsys.readouterr().out) == {"deleted": "feature"}
+    assert main(cli_args(config_path, "list-templates", as_json=True)) == 0
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_cli_add_from_template_substitution_override_missing_and_dry_run(
+    tmp_path,
+    capsys,
+):
+    config_path, allowed_root = write_cli_config(tmp_path)
+    project = allowed_root / "project"
+    project.mkdir()
+    save = cli_args(
+        config_path,
+        "save-template",
+        "feature",
+        "--title",
+        "{feature} 구현",
+        "--prompt",
+        "{feature} 구현 후 {check} 통과",
+        "--project",
+        project,
+        "--priority",
+        60,
+    )
+    assert main(save) == 0
+    capsys.readouterr()
+
+    dry_run = cli_args(
+        config_path,
+        "add-from-template",
+        "feature",
+        "--var",
+        "feature=검색",
+        "--var",
+        "check=pytest/ruff",
+        "--priority",
+        95,
+        "--dry-run",
+        as_json=True,
+    )
+    assert main(dry_run) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["enqueued"] is False
+    assert preview["task"] is None
+    assert preview["draft"]["title"] == "검색 구현"
+    assert preview["draft"]["priority"] == 95
+
+    config = load_config(config_path)
+    engine = create_db_engine(config.app.db_path)
+    service = TaskService(make_session_factory(engine), config)
+    assert service.list() == []
+    engine.dispose()
+
+    missing = cli_args(
+        config_path,
+        "add-from-template",
+        "feature",
+        "--var",
+        "feature=검색",
+    )
+    assert main(missing) == 2
+    assert "missing template variables: check" in capsys.readouterr().err
+
+    overridden = cli_args(
+        config_path,
+        "add-from-template",
+        "feature",
+        "--title",
+        "직접 제목",
+        "--prompt",
+        "직접 프롬프트",
+        "--agent",
+        "claude",
+        as_json=True,
+    )
+    assert main(overridden) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["enqueued"] is True
+    assert payload["task"]["title"] == "직접 제목"
+    assert payload["task"]["prompt"] == "직접 프롬프트"
+    assert payload["task"]["agent_policy"] == "claude"
+
+
 def test_cli_list_filter_show_and_json_include_stable_fields(tmp_path, capsys):
     config_path, allowed_root = write_cli_config(tmp_path)
     project = allowed_root / "project"

@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models — the five tables from plan §9.
+"""SQLAlchemy ORM models for queue state, execution history, and reusable drafts.
 
 Enum columns are stored as their string values in TEXT (readable with any SQLite
 browser). Python-side @validates rejects bad values at assignment time; CHECK
@@ -236,6 +236,53 @@ class TaskReview(Base):
     reviewed_at: Mapped[datetime] = mapped_column(default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="reviews")
+
+
+class TaskTemplate(Base):
+    __tablename__ = "task_templates"
+    __table_args__ = (
+        CheckConstraint(
+            "priority BETWEEN 0 AND 100",
+            name="ck_task_templates_priority_range",
+        ),
+        CheckConstraint(
+            "estimated_tokens >= 0",
+            name="ck_task_templates_estimated_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "max_retries >= 0",
+            name="ck_task_templates_max_retries_nonnegative",
+        ),
+        CheckConstraint(
+            "retry_delay_minutes >= 0",
+            name="ck_task_templates_retry_delay_nonnegative",
+        ),
+        CheckConstraint(
+            "recurrence_interval_days IS NULL OR recurrence_interval_days >= 1",
+            name="ck_task_templates_recurrence_interval_positive",
+        ),
+    )
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text)
+    prompt: Mapped[str] = mapped_column(Text)
+    project_path: Mapped[str | None] = mapped_column(Text, default=None)
+    agent_policy: Mapped[AgentPolicy] = mapped_column(_enum(AgentPolicy))
+    priority: Mapped[int] = mapped_column(default=50)
+    estimated_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    approval_mode: Mapped[ApprovalMode] = mapped_column(
+        _enum(ApprovalMode), default=ApprovalMode.CONFIRM
+    )
+    max_retries: Mapped[int] = mapped_column(default=2)
+    retry_delay_minutes: Mapped[int] = mapped_column(default=10)
+    recurrence_interval_days: Mapped[int | None] = mapped_column(Integer, default=None)
+    not_before: Mapped[datetime | None] = mapped_column(default=None)
+    tags: Mapped[list[str]] = mapped_column("tags_json", JSON, default=list)
+    dependency_ids: Mapped[list[int]] = mapped_column(
+        "dependency_ids_json", JSON, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
 class Setting(Base):

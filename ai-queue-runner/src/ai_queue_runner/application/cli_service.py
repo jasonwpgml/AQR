@@ -13,6 +13,10 @@ from pydantic import ValidationError
 
 from ai_queue_runner.application.agent_service import AgentService, AgentView
 from ai_queue_runner.application.task_service import TaskDraft, TaskService
+from ai_queue_runner.application.task_template_service import (
+    TaskTemplateDraft,
+    TaskTemplateService,
+)
 from ai_queue_runner.application.workload_planning import (
     WorkloadBatch,
     WorkloadPlan,
@@ -38,10 +42,11 @@ def run_cli_command(args: argparse.Namespace, config: AppConfig) -> str:
         init_db(engine)
         session_factory = make_session_factory(engine)
         service = TaskService(session_factory, config)
+        templates = TaskTemplateService(session_factory)
         agents = AgentService(session_factory)
         worktrees = WorktreeService(session_factory, config)
         try:
-            return _dispatch(args, service, agents, worktrees, config)
+            return _dispatch(args, service, templates, agents, worktrees, config)
         except (KeyError, ValidationError, ValueError) as exc:
             raise CliUsageError(_one_line(str(exc)).strip("'")) from exc
     finally:
@@ -51,6 +56,7 @@ def run_cli_command(args: argparse.Namespace, config: AppConfig) -> str:
 def _dispatch(
     args: argparse.Namespace,
     service: TaskService,
+    templates: TaskTemplateService,
     agents: AgentService,
     worktrees: WorktreeService,
     config: AppConfig,
@@ -76,6 +82,102 @@ def _dispatch(
             _task_record(task),
             f"작업 #{task.id} 생성: [{task.status.value}] "
             f"{task.agent_policy.value} P{task.priority} {task.title}",
+            args.json,
+        )
+    if args.command == "save-template":
+        template, overwritten = templates.save(
+            args.name,
+            TaskTemplateDraft(
+                title=args.title,
+                prompt=args.prompt,
+                project_path=args.project,
+                agent_policy=args.agent,
+                priority=args.priority,
+                estimated_tokens=args.estimated_tokens,
+                approval_mode=args.approval,
+                max_retries=args.max_retries,
+                retry_delay_minutes=args.retry_delay,
+                recurrence_interval_days=_parse_recurrence_interval(args.repeat),
+                not_before=_parse_local_datetime(args.not_before),
+                tags=args.tag,
+                dependency_ids=args.depends_on,
+            ),
+        )
+        record = _template_record(template)
+        record["overwritten"] = overwritten
+        action = "덮어씀" if overwritten else "저장"
+        return _json_or_text(
+            record,
+            f"템플릿 {template.name!r} {action}: {template.title}",
+            args.json,
+        )
+    if args.command == "list-templates":
+        records = [_template_record(template) for template in templates.list()]
+        lines = ["NAME  AGENT  PRIORITY  TITLE"]
+        lines.extend(
+            f"{record['name']}  {record['agent_policy']}  "
+            f"P{record['priority']}  {record['title']}"
+            for record in records
+        )
+        return _json_or_text(
+            records,
+            "템플릿이 없습니다." if not records else "\n".join(lines),
+            args.json,
+        )
+    if args.command == "show-template":
+        template = templates.get(args.name)
+        if template is None:
+            raise CliUsageError(f"템플릿 {args.name!r}을 찾을 수 없습니다.")
+        record = _template_record(template)
+        return _json_or_text(
+            record,
+            "\n".join(f"{key}: {_text_value(value)}" for key, value in record.items()),
+            args.json,
+        )
+    if args.command == "delete-template":
+        templates.delete(args.name)
+        return _json_or_text(
+            {"deleted": args.name.strip()},
+            f"템플릿 {args.name.strip()!r}을 삭제했습니다.",
+            args.json,
+        )
+    if args.command == "add-from-template":
+        draft = templates.render(
+            args.name,
+            _parse_template_variables(args.var),
+            title=args.title,
+            prompt=args.prompt,
+            project_path=args.project,
+            agent_policy=args.agent,
+            priority=args.priority,
+            estimated_tokens=args.estimated_tokens,
+            approval_mode=args.approval,
+            max_retries=args.max_retries,
+            retry_delay_minutes=args.retry_delay,
+            recurrence_interval_days=(
+                None if args.repeat is None else _parse_recurrence_interval(args.repeat)
+            ),
+            not_before=(
+                None if args.not_before is None else _parse_local_datetime(args.not_before)
+            ),
+            tags=args.tag,
+            dependency_ids=args.depends_on,
+        )
+        if args.dry_run:
+            service.validate_batch([draft])
+            task = None
+        else:
+            task = service.create(draft)
+        payload = {
+            "template": args.name.strip(),
+            "enqueued": task is not None,
+            "draft": _draft_record(draft),
+            "task": None if task is None else _task_record(task),
+        }
+        action = "미리보기" if task is None else f"작업 #{task.id} 생성"
+        return _json_or_text(
+            payload,
+            f"템플릿 {args.name.strip()!r} {action}: {draft.title}",
             args.json,
         )
     if args.command == "list-tasks":
@@ -465,6 +567,59 @@ def _agent_record(view: AgentView) -> dict[str, Any]:
         "current_task_id": view.current_task_id,
         "last_error": view.last_error,
     }
+
+
+def _template_record(template: object) -> dict[str, Any]:
+    return {
+        "name": template.name,
+        "title": template.title,
+        "prompt": template.prompt,
+        "project_path": template.project_path,
+        "agent_policy": _enum_value(template.agent_policy),
+        "priority": template.priority,
+        "estimated_tokens": template.estimated_tokens,
+        "approval_mode": _enum_value(template.approval_mode),
+        "max_retries": template.max_retries,
+        "retry_delay_minutes": template.retry_delay_minutes,
+        "recurrence_interval_days": template.recurrence_interval_days,
+        "not_before": _utc_iso(template.not_before),
+        "tags": list(template.tags),
+        "dependency_ids": list(template.dependency_ids),
+        "created_at": _utc_iso(template.created_at),
+        "updated_at": _utc_iso(template.updated_at),
+    }
+
+
+def _draft_record(draft: TaskDraft) -> dict[str, Any]:
+    return {
+        "title": draft.title,
+        "prompt": draft.prompt,
+        "project_path": str(draft.project_path),
+        "agent_policy": draft.agent_policy.value,
+        "priority": draft.priority,
+        "estimated_tokens": draft.estimated_tokens,
+        "approval_mode": draft.approval_mode.value,
+        "max_retries": draft.max_retries,
+        "retry_delay_minutes": draft.retry_delay_minutes,
+        "recurrence_interval_days": draft.recurrence_interval_days,
+        "not_before": _utc_iso(draft.not_before),
+        "tags": list(draft.tags),
+        "dependency_ids": list(draft.dependency_ids),
+    }
+
+
+def _parse_template_variables(values: list[str]) -> dict[str, str]:
+    variables: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise CliUsageError("--var는 key=value 형식이어야 합니다.")
+        key, variable_value = value.split("=", 1)
+        if not key.isidentifier():
+            raise CliUsageError(f"올바르지 않은 템플릿 변수명입니다: {key!r}")
+        if key in variables:
+            raise CliUsageError(f"템플릿 변수가 중복되었습니다: {key}")
+        variables[key] = variable_value
+    return variables
 
 
 def _parse_local_datetime(value: str | None) -> datetime | None:

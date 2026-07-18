@@ -14,6 +14,7 @@ flowchart TB
 
     subgraph APP["application/ · 유스케이스"]
         TASK[TaskService\nCRUD·원자적 배치·작업 분할·품질 평가·일일 집계]
+        TEMPLATE[TaskTemplateService\n저장·치환·작업 초안 생성]
         PLAN[WorkloadPlanning\n토큰 예산·결정적 분배]
         AGENT[AgentService]
         RUNTIME[QueueRuntime\nAPScheduler + asyncio thread\n즉시 실행 예약]
@@ -58,6 +59,7 @@ flowchart TB
     WORKTREE --> REPO
     WORKTREE --> GIT
     TASK --> REPO
+    TEMPLATE --> REPO
     PLAN --> TASK
     TASK --> POLICY
     REPO --> MODEL --> DB
@@ -130,6 +132,24 @@ erDiagram
         text notes
         datetime reviewed_at
     }
+    task_templates {
+        text name PK
+        text title
+        text prompt
+        text project_path
+        text agent_policy
+        int priority
+        int estimated_tokens
+        text approval_mode
+        int max_retries
+        int retry_delay_minutes
+        int recurrence_interval_days
+        datetime not_before
+        json tags_json
+        json dependency_ids_json
+        datetime created_at
+        datetime updated_at
+    }
     settings {
         text key PK
         json value_json
@@ -160,6 +180,10 @@ worktree 경로·브랜치를 추가합니다. 작업 행은 현재/재시도 �
 스키마 v7은 append-only `task_reviews` 평가 이력과 `tasks.rework_of_task_id` 자기 참조를
 추가합니다. 최신 평가 행이 현재 pass/fail·점수이며, 실패 평가와 연결된 재작업 생성은
 같은 트랜잭션에서 커밋됩니다. AQR 내부에는 LLM 호출이나 자동 채점이 없습니다.
+스키마 v8은 독립된 `task_templates` 테이블에 단일 작업 초안과 생성·수정 시각을 저장합니다.
+`project_path`는 템플릿 저장 시 nullable이지만 작업 생성 시 `TaskDraft`와 허용 경로 정책을
+통과해야 합니다. `dependency_ids_json`은 기존 작업 의존만 저장하며 배치 전용 형제 인덱스는
+템플릿 계약에 포함하지 않습니다.
 
 ## 3. 작업 상태 전이
 
@@ -265,6 +289,9 @@ flowchart TD
   기다리도록 재배선한 뒤 한 번만 커밋합니다. 실패하면 원본 취소까지 롤백합니다.
 - `pending-reviews`는 평가 이력이 없는 succeeded 작업만 조회합니다. `review-task --reopen`은
   fail 평가 행과 원본 설정을 승계한 waiting 재작업을 한 트랜잭션으로 저장합니다.
+- `add-from-template`은 title/prompt의 단순 식별자 자리표시자를 모두 해소한 뒤 완전한
+  `TaskDraft`를 만들며, 오버라이드가 저장값보다 우선합니다. `--dry-run`도 경로·의존성을
+  검증하지만 `tasks`를 쓰지 않습니다.
 - `cleanup-worktree ID`는 종료 상태 작업만 받으며 dirty 파일이나 프로젝트 HEAD에 포함되지 않은 브랜치 커밋이 있으면 삭제를 거부합니다. 통과해도 worktree만 제거하고 브랜치와 실행 이력은 남깁니다.
 
 ## 6. 주요 파일
@@ -273,6 +300,7 @@ flowchart TD
 |---|---|
 | `application/runtime.py` | APScheduler 틱, asyncio 실행 루프, 승인·거절·중단 |
 | `application/task_service.py` | 작업 CRUD·원자적 배치/분할·의존 승계·복제·재시도·완료 보관·프로젝트별 일일 집계 |
+| `application/task_template_service.py` | DB 작업 템플릿 CRUD·title/prompt 변수 치환·TaskDraft 생성 |
 | `application/workload_planning.py` | 명시적 토큰 예산·형제 의존 DAG 검증·결정적 Claude/Codex 분배 |
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |
