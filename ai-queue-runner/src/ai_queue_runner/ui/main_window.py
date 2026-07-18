@@ -379,6 +379,8 @@ class MainWindow(QMainWindow):
             f"재시도: {getattr(task, 'retry_count', 0)} / {getattr(task, 'max_retries', 0)}",
             "자동 커밋 요청: "
             + ("예" if bool(getattr(task, "auto_commit", False)) else "아니요"),
+            "Draft PR 요청: "
+            + ("예" if bool(getattr(task, "draft_pr", False)) else "아니요"),
         ]
         review_verdict = enum_value(getattr(task, "review_verdict", None))
         review_score = getattr(task, "review_score", None)
@@ -426,6 +428,19 @@ class MainWindow(QMainWindow):
                 f"- attempt {run.attempt}: "
                 f"{getattr(run, 'auto_commit_hash', None) or run.auto_commit_result}"
                 for run in auto_commit_runs[-5:]
+            )
+        draft_pr_runs = [
+            run
+            for run in runs
+            if getattr(run, "draft_pr_url", None)
+            or getattr(run, "draft_pr_result", None)
+        ]
+        if draft_pr_runs:
+            details.extend(("", "Draft PR 이력:"))
+            details.extend(
+                f"- attempt {run.attempt}: "
+                f"{getattr(run, 'draft_pr_url', None) or run.draft_pr_result}"
+                for run in draft_pr_runs[-5:]
             )
         list_events = getattr(self.task_service, "list_events", None)
         if callable(list_events):

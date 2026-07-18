@@ -103,6 +103,7 @@ class Task(Base):
         _enum(ApprovalMode), default=ApprovalMode.CONFIRM
     )
     auto_commit: Mapped[bool] = mapped_column(Boolean, default=False)
+    draft_pr: Mapped[bool] = mapped_column(Boolean, default=False)
     max_retries: Mapped[int] = mapped_column(default=2)
     retry_count: Mapped[int] = mapped_column(default=0)
     retry_delay_minutes: Mapped[int] = mapped_column(default=10)
@@ -222,6 +223,8 @@ class TaskRun(Base):
     worktree_branch: Mapped[str | None] = mapped_column(Text, default=None)
     auto_commit_hash: Mapped[str | None] = mapped_column(Text, default=None)
     auto_commit_result: Mapped[str | None] = mapped_column(Text, default=None)
+    draft_pr_url: Mapped[str | None] = mapped_column(Text, default=None)
+    draft_pr_result: Mapped[str | None] = mapped_column(Text, default=None)
 
     task: Mapped[Task] = relationship(back_populates="runs")
 
@@ -287,6 +290,7 @@ class TaskTemplate(Base):
         _enum(ApprovalMode), default=ApprovalMode.CONFIRM
     )
     auto_commit: Mapped[bool] = mapped_column(Boolean, default=False)
+    draft_pr: Mapped[bool] = mapped_column(Boolean, default=False)
     max_retries: Mapped[int] = mapped_column(default=2)
     retry_delay_minutes: Mapped[int] = mapped_column(default=10)
     recurrence_interval_days: Mapped[int | None] = mapped_column(Integer, default=None)

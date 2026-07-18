@@ -89,6 +89,7 @@ erDiagram
         text status
         text approval_mode
         boolean auto_commit
+        boolean draft_pr
         int max_retries
         int retry_count
         int recurrence_interval_days
@@ -130,6 +131,8 @@ erDiagram
         text worktree_branch
         text auto_commit_hash
         text auto_commit_result
+        text draft_pr_url
+        text draft_pr_result
     }
     task_reviews {
         int id PK
@@ -151,6 +154,7 @@ erDiagram
         int estimated_tokens
         text approval_mode
         boolean auto_commit
+        boolean draft_pr
         int max_retries
         int retry_delay_minutes
         int recurrence_interval_days
@@ -215,6 +219,9 @@ worktree 경로·브랜치를 추가합니다. 작업 행은 현재/재시도 �
 이관합니다. 이벤트는 작업 ID·최초 생성 시각·프로젝트·제목을 스냅샷으로 가지며 의도적으로
 외래 키를 두지 않아 작업 영구 삭제 후에도 남습니다. DB 초기화는 스키마 검사 전
 `BEGIN IMMEDIATE` 쓰기 잠금을 획득해 여러 AI CLI의 동시 마이그레이션을 직렬화합니다.
+스키마 v11은 `tasks`와 `task_templates`에 작업별 `draft_pr` opt-in을 추가하고,
+`task_runs`에 PR URL과 생성·생략·실패 결과를 추가합니다. 기존 행은 false/null로
+이관되며 v10→v11 마이그레이션은 열 존재를 먼저 검사해 재시도할 수 있습니다.
 
 ## 3. 작업 상태 전이
 
@@ -268,6 +275,9 @@ flowchart TD
     RUN --> RESULT{결과 분류}
     RESULT --> DONE[succeeded/failed/retry_wait/blocked]
     DONE -->|succeeded + opt-in| COMMIT[변경 commit 또는 생략·실패 사유 기록]
+    COMMIT -->|실제 commit + draft PR 이중 opt-in| PUBLISH{관리형 aqr/T&lt;id&gt; worktree?}
+    PUBLISH -- 아니오 --> PRSKIP[push 생략 사유 기록]
+    PUBLISH -- 예 --> PR[origin/gh/auth 확인\n기존 PR URL 또는 push + draft PR]
     DONE -->|succeeded + 반복 규칙| NEXT[다음 회차 waiting 생성\nnot_before = 완료 시각 + N일]
     RESULT --> LIMIT[사용량 제한: agent cooldown + task waiting]
     RESULT --> FALLBACK[Any 재시도: 반대 AI 우선 + 실행 기록]
@@ -300,7 +310,7 @@ flowchart TD
 반복 규칙은 nullable 양의 일수로 표현하며 1일은 매일, 7일은 매주, 나머지는 N일
 간격입니다. `ExecutionService`가 성공 상태와 완료 시각을 기록한 뒤 같은 DB 트랜잭션에서
 `RecurrenceService`를 호출합니다. 후속 작업은 제목·프롬프트·프로젝트·AI 정책·우선순위·
-토큰 추정·승인·자동 커밋·재시도·태그·선행 작업·반복 규칙을 복사하고 실행 상태와 재시도 횟수는
+토큰 추정·승인·자동 커밋·draft PR·재시도·태그·선행 작업·반복 규칙을 복사하고 실행 상태와 재시도 횟수는
 초기화합니다. 성공과 후속 작업이 함께 커밋되므로 크래시 뒤 둘 중 하나만 남지 않으며,
 `recurrence_source_task_id` 유일 제약과 기존 행 조회가 이벤트 재처리를 멱등하게 만듭니다.
 실패·차단·취소 경로에서는 이 서비스를 호출하지 않습니다. 후속 작업의 `not_before`는
@@ -336,6 +346,9 @@ flowchart TD
 - 자동 커밋은 전역·작업 이중 opt-in일 때만 실행 전 cwd의 clean 상태를 캡처합니다. 성공
   상태와 반복 후속 작업을 먼저 DB에 커밋한 뒤 Git 커밋을 시도하므로 Git 실패는 작업
   상태를 되돌리지 않습니다. 일반 checkout과 worktree에 같은 사전 dirty 규칙을 적용합니다.
+- draft PR은 자동 커밋이 실제 생성된 관리형 `aqr/T<ID>` worktree 실행에서만 허용합니다.
+  전역·작업 이중 opt-in 뒤 origin·gh 설치·gh 인증을 확인하고 기존 PR이 없을 때만 push와
+  `gh pr create --draft`를 실행합니다. 모든 생략·실패는 실행 기록에 남고 succeeded를 바꾸지 않습니다.
 
 ## 6. 주요 파일
 
@@ -347,7 +360,7 @@ flowchart TD
 | `application/workload_planning.py` | 명시적 토큰 예산·형제 의존 DAG 검증·결정적 Claude/Codex 분배 |
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |
-| `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback·자동 커밋 결정과 이력 기록 |
+| `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback·자동 커밋·draft PR 결정과 이력 기록 |
 | `application/worktree_service.py` | 격리 예약 준비·실패 시 exclusive 폴백·완료 worktree 정리 정책 |
 | `application/recurrence_service.py` | 성공한 반복 작업의 다음 회차를 원본 ID 기준으로 멱등 생성 |
 | `application/recovery_service.py` | 오래된 예약·재시도·고아 PID 복구 |
@@ -356,6 +369,7 @@ flowchart TD
 | `infrastructure/path_policy.py` | 프로젝트 허용 루트 검증 |
 | `infrastructure/git_worktrees.py` | Git worktree/브랜치 결정적 생성·재사용과 미병합 보호 정리 |
 | `infrastructure/git_auto_commit.py` | 실행 전 clean 검사, 성공 변경 staging·커밋, 해시/사유 결과 |
+| `infrastructure/draft_pr.py` | 관리형 브랜치 origin/gh 점검, 기존 PR 조회, push·draft PR 생성 |
 | `infrastructure/backup.py` | SQLite 온라인 백업과 무결성 검사 |
 | `config/exporter.py` | 유효 설정의 결정적 TOML 내보내기 |
 | `infrastructure/windows_startup.py` | HKCU Run 시작 프로그램 등록 |

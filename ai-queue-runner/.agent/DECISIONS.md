@@ -56,3 +56,5 @@ D051 Automatic Git commit requires global and per-task opt-in, snapshots clean s
 D052 Task provenance stores created_by plus an optional creator_session_id; recurring successors preserve provenance, while command-created derivatives belong to the current CLI actor
 D053 task_events intentionally has no task foreign key so management history survives hard deletion; task_created_at disambiguates a reused numeric ID
 D054 Schema initialization takes one SQLite BEGIN IMMEDIATE writer transaction around legacy inference, create_all, and every migration so concurrent AI CLI commands cannot race DDL
+D055 Draft PR publication requires global and per-task opt-in plus an actual automatic commit; draft_pr without auto_commit is rejected for tasks and templates.
+D056 Automatic push is limited to the managed aqr/T<ID> branch of an actual worktree run. Non-worktree current branches are never pushed; publication skips and failures are recorded on task_runs without changing succeeded.

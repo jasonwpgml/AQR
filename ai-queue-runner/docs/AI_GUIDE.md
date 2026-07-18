@@ -37,7 +37,7 @@
 
 | 명령 | 용도 | 주요 옵션/인자 |
 |---|---|---|
-| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--auto-commit`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
+| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--auto-commit`, `--draft-pr`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
 | `save-template NAME` | 단일 작업 초안 저장/덮어쓰기 | `--title --prompt` 필수, 나머지는 `add-task`와 같은 기본 필드. `--project`는 나중에 지정 가능 |
 | `list-templates` / `show-template NAME` | 템플릿 목록/상세 조회 | 이름순 목록, 저장된 TaskDraft 기본값 확인 |
 | `add-from-template NAME` | 변수 치환 후 작업 등록 | `--var key=value` 반복, TaskDraft 오버라이드, `--dry-run` |
@@ -47,12 +47,12 @@
 | `list-events` | 삭제 후에도 남는 관리 이력 조회 | `--task-id`, `--project`, `--actor`, `--limit` |
 | `pending-reviews` | 성공했지만 미평가인 작업 조회 | `--project PATH`로 프로젝트 한정, 완료 시각 순 |
 | `review-task ID` | 성공 작업 품질 평가 기록 | `--verdict {pass,fail}` 필수, `--score 1-5`, `--notes`, fail 전용 `--reopen PROMPT` |
-| `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run`, `auto_commit_enabled` |
+| `queue-status` | 큐·에이전트·자동화 설정 요약 | 작업 수, 승인 대기 목록, 에이전트 상태, `global_auto_run`, `auto_commit_enabled`, `draft_pr_enabled` |
 | `daily-summary` | 로컬 날짜의 프로젝트별 종료 활동 요약 | `--date YYYY-MM-DD`(생략 시 오늘), 완료·실패·차단·취소·실행·fallback·worktree·사용량 제한 |
 | `plan-batch PATH` | 토큰 예산으로 작업을 분배하고 원자적으로 등록 | JSON 파일, `--dry-run` |
 | `split-task ID PATH` | 대기 작업을 같은 JSON 계약의 하위 작업 배치로 원자적 교체 | JSON 파일, `--dry-run` |
 | `cleanup-worktree ID` | 병합 완료된 종료 작업의 worktree 제거 | dirty/미병합 커밋이면 거부, 브랜치는 유지 |
-| `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--auto-commit`/`--no-auto-commit`, `--approval auto`, `--repeat`, `--clear-repeat`, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
+| `update-task ID` | 대기(waiting) 작업 부분 수정 | 준 플래그만 덮어씀. `--auto-commit`/`--no-auto-commit`, `--draft-pr`/`--no-draft-pr`, `--approval auto`, `--repeat`, `--clear-repeat`, `--priority`, `--estimated-tokens`, `--clear-not-before`, `--tag`(전체 교체), `--depends-on`(전체 교체) |
 | `retry-task ID` | 실패(failed)/차단(blocked) 작업 재대기 | 재시도 횟수·오류 초기화 |
 | `cancel-task ID` | 대기·재시도대기·차단 작업 취소 | |
 | `duplicate-task ID` | 작업 복제(새 waiting 작업) | |
@@ -139,7 +139,7 @@ ID·제목·사유를 반환한다. 나머지 삭제는 그대로 커밋된다.
 나열하고 등록을 거부합니다. 사용하지 않은 추가 변수는 무시합니다.
 
 `--title`, `--prompt`, `--project`, `--agent`, `--priority`, `--estimated-tokens`,
-`--approval`, `--auto-commit`/`--no-auto-commit`, `--not-before`, `--max-retries`, `--retry-delay`, `--repeat`, `--tag`,
+`--approval`, `--auto-commit`/`--no-auto-commit`, `--draft-pr`/`--no-draft-pr`, `--not-before`, `--max-retries`, `--retry-delay`, `--repeat`, `--tag`,
 `--depends-on`은 저장값보다 우선합니다. title/prompt를 직접 오버라이드하면 해당 템플릿
 필드의 변수는 요구하지 않습니다. `--tag`와 `--depends-on`은 각각 전체 목록을 교체합니다.
 `--dry-run`도 실제 등록과 같은 `TaskService` 검증을 수행하지만 `tasks` 행을 만들지 않습니다.
@@ -391,10 +391,54 @@ auto_commit_enabled = true
   아니라 커밋 생략이다. 특히 사전 dirty 저장소는 이전 작업을 섞지 않기 위해 거부한다.
 - clean 상태에서 시작해 성공 후 변경이 있으면 `git add -A`와
   `aqr: <작업 제목> (task #<ID>)` 형식의 커밋을 실행한다. 본문에는 실행 ID와 AI가 들어간다.
-- worktree 실행은 해당 `aqr/T<ID>` 브랜치에 커밋하며 자동 merge·push·PR 생성은 하지 않는다.
+- worktree 실행은 해당 `aqr/T<ID>` 브랜치에 커밋한다. push·PR은 아래의 별도 opt-in에서만 수행한다.
 - Git 명령이나 커밋 훅이 실패해도 작업은 `succeeded`를 유지한다. 실패 사유만 실행 기록에
   남으며, `show-task ID --json`의 `recent_runs[].auto_commit_hash` 또는
   `recent_runs[].auto_commit_result`로 확인한다.
+
+## 자동 draft PR 생성
+
+draft PR은 기본값이 off이며 자동 커밋 opt-in까지 포함해 다음 조건이 모두 필요하다.
+
+```toml
+[scheduler]
+worktree_parallel_enabled = true
+auto_commit_enabled = true
+draft_pr_enabled = true
+```
+
+```powershell
+# 새 작업 또는 템플릿 저장
+... add-task --title "회귀 테스트 추가" --prompt "..." `
+    --project "C:\projects\sample" --auto-commit --draft-pr --json
+... save-template pr-ready --title "{feature} 구현" --prompt "..." `
+    --auto-commit --draft-pr --json
+
+# waiting 작업 토글. draft_pr을 끈 뒤에만 auto_commit을 끌 수 있다.
+... update-task 7 --auto-commit --draft-pr --json
+... update-task 7 --no-draft-pr --no-auto-commit --json
+```
+
+전제조건은 `origin` 원격, 설치된 GitHub CLI(`gh`), 그리고 `gh auth login`으로 완료된
+인증이다. AQR은 인증 정보를 저장하지 않는다. 작업별 `draft_pr=true`인데
+`auto_commit=false`인 등록·수정·템플릿은 검증 오류로 거부한다.
+
+push 대상 안전성 때문에 실제 실행이 관리형 `worktrees_dir/T<ID>` checkout의
+`aqr/T<ID>` 브랜치인 경우에만 발행한다. 잠금 충돌이 없어 원 프로젝트에서 실행된 작업은
+현재 브랜치가 무엇이든 자동 push하지 않고 생략 사유를 기록한다. 이 정책상
+`worktree_parallel_enabled=true`만으로 모든 작업의 PR 생성을 보장하지는 않는다.
+
+성공한 실행에서 자동 커밋이 실제 생성되면 AQR은 다음 순서로 처리한다.
+
+1. `origin`, 현재 관리형 브랜치, `gh` 설치와 인증을 확인한다.
+2. 같은 head 브랜치의 기존 open/closed/merged PR이 있으면 새로 만들지 않고 URL을 기록한다.
+3. 없다면 `git push -u origin aqr/T<ID>` 후 제목을 작업 제목으로 하여
+   `gh pr create --draft`를 실행한다. 본문에는 task ID, 실행 ID, agent, commit hash가 들어간다.
+
+원격 없음, gh 부재·미인증, 커밋 미생성, 비worktree 실행은 `skipped:`로, push·조회·생성
+오류는 `failed:`로 `recent_runs[].draft_pr_result`에 남는다. URL은
+`recent_runs[].draft_pr_url`에 저장된다. 어느 경우에도 이미 확정된 `succeeded` 상태를
+되돌리지 않는다.
 
 ## 상태 머신 (어떤 명령이 통하는지)
 

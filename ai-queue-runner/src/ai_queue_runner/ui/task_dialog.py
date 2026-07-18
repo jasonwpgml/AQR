@@ -154,6 +154,11 @@ class TaskDialog(QDialog):
         self.auto_commit_check.setToolTip(
             "scheduler.auto_commit_enabled 설정도 켜져 있어야 실행됩니다."
         )
+        self.draft_pr_check = QCheckBox("자동 커밋 후 draft PR 생성")
+        self.draft_pr_check.setToolTip(
+            "자동 커밋과 scheduler.draft_pr_enabled가 필요하며, "
+            "관리형 worktree 실행에서만 push합니다."
+        )
 
         self.max_retries_spin = QSpinBox()
         self.max_retries_spin.setRange(0, 20)
@@ -212,6 +217,7 @@ class TaskDialog(QDialog):
         form.addRow("예상 토큰", self.estimated_tokens_spin)
         form.addRow("실행 방식", self.approval_combo)
         form.addRow("Git", self.auto_commit_check)
+        form.addRow("GitHub", self.draft_pr_check)
         form.addRow("최대 재시도", self.max_retries_spin)
         form.addRow("재시도 간격", self.retry_delay_spin)
         form.addRow("반복", recurrence_row)
@@ -374,6 +380,7 @@ class TaskDialog(QDialog):
             enum_value(getattr(task, "approval_mode", ApprovalMode.CONFIRM)),
         )
         self.auto_commit_check.setChecked(bool(getattr(task, "auto_commit", False)))
+        self.draft_pr_check.setChecked(bool(getattr(task, "draft_pr", False)))
         self.max_retries_spin.setValue(int(getattr(task, "max_retries", 2)))
         self.retry_delay_spin.setValue(int(getattr(task, "retry_delay_minutes", 10)))
         recurrence_interval_days = getattr(task, "recurrence_interval_days", None)
@@ -586,6 +593,7 @@ class TaskDialog(QDialog):
             estimated_tokens=self.estimated_tokens_spin.value(),
             approval_mode=self.approval_combo.currentData(),
             auto_commit=self.auto_commit_check.isChecked(),
+            draft_pr=self.draft_pr_check.isChecked(),
             max_retries=self.max_retries_spin.value(),
             retry_delay_minutes=self.retry_delay_spin.value(),
             recurrence_interval_days=recurrence_interval_days,

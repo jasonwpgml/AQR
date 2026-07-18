@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.orm import Session
 
@@ -63,6 +63,7 @@ class TaskDraft(BaseModel):
     estimated_tokens: int = Field(default=0, ge=0)
     approval_mode: ApprovalMode = ApprovalMode.CONFIRM
     auto_commit: bool = False
+    draft_pr: bool = False
     max_retries: int = Field(default=2, ge=0)
     retry_delay_minutes: int = Field(default=10, ge=0)
     recurrence_interval_days: int | None = Field(default=None, ge=1)
@@ -70,6 +71,12 @@ class TaskDraft(BaseModel):
     tags: list[str] = Field(default_factory=list)
     dependency_ids: list[int] = Field(default_factory=list)
     depends_on_indices: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_auto_commit_for_draft_pr(self) -> TaskDraft:
+        if self.draft_pr and not self.auto_commit:
+            raise ValueError("draft_pr requires auto_commit")
+        return self
 
     @field_validator("not_before")
     @classmethod
@@ -119,6 +126,7 @@ class TaskView:
     status: TaskStatus
     approval_mode: ApprovalMode
     auto_commit: bool
+    draft_pr: bool
     max_retries: int
     retry_count: int
     retry_delay_minutes: int
@@ -203,6 +211,8 @@ class RunView:
     worktree_branch: str | None
     auto_commit_hash: str | None
     auto_commit_result: str | None
+    draft_pr_url: str | None
+    draft_pr_result: str | None
 
 
 @dataclass(frozen=True)
@@ -430,6 +440,7 @@ class TaskService:
                         estimated_tokens=task.estimated_tokens,
                         approval_mode=task.approval_mode,
                         auto_commit=task.auto_commit,
+                        draft_pr=task.draft_pr,
                         max_retries=task.max_retries,
                         retry_delay_minutes=task.retry_delay_minutes,
                         tags=[tag for tag in task.tags if tag != _ARCHIVED_TAG],
@@ -751,6 +762,7 @@ class TaskService:
                 estimated_tokens=source.estimated_tokens,
                 approval_mode=source.approval_mode,
                 auto_commit=source.auto_commit,
+                draft_pr=source.draft_pr,
                 max_retries=source.max_retries,
                 retry_delay_minutes=source.retry_delay_minutes,
                 recurrence_interval_days=source.recurrence_interval_days,
@@ -1106,6 +1118,7 @@ def _task_values(
         "estimated_tokens": draft.estimated_tokens,
         "approval_mode": draft.approval_mode,
         "auto_commit": draft.auto_commit,
+        "draft_pr": draft.draft_pr,
         "max_retries": draft.max_retries,
         "retry_delay_minutes": draft.retry_delay_minutes,
         "recurrence_interval_days": draft.recurrence_interval_days,
@@ -1140,6 +1153,7 @@ def _to_task_view(task: Task) -> TaskView:
         status=task.status,
         approval_mode=task.approval_mode,
         auto_commit=task.auto_commit,
+        draft_pr=task.draft_pr,
         max_retries=task.max_retries,
         retry_count=task.retry_count,
         retry_delay_minutes=task.retry_delay_minutes,
@@ -1254,6 +1268,8 @@ def _to_run_view(run: TaskRun) -> RunView:
         worktree_branch=run.worktree_branch,
         auto_commit_hash=run.auto_commit_hash,
         auto_commit_result=run.auto_commit_result,
+        draft_pr_url=run.draft_pr_url,
+        draft_pr_result=run.draft_pr_result,
     )
 
 

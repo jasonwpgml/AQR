@@ -41,3 +41,4 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T036 T029-T032 review cleanup: worktree cleanup fix and simplifications
 [done] T037 opt-in automatic Git commit after successful execution
 [done] T038 AI-friendly task provenance, scoped management, audit history, and serialized migrations
+[done] T039 opt-in push and GitHub draft PR publication after automatic commit

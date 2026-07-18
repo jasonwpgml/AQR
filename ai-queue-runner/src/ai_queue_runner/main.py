@@ -86,6 +86,11 @@ def main(argv: list[str] | None = None) -> int:
         help="request an automatic Git commit after a successful run",
     )
     add_task.add_argument(
+        "--draft-pr",
+        action="store_true",
+        help="publish the automatic commit from a managed worktree as a draft PR",
+    )
+    add_task.add_argument(
         "--not-before",
         metavar="YYYY-MM-DD HH:MM",
         help="local time; stored internally as UTC",
@@ -125,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     save_template.add_argument("--estimated-tokens", type=int, default=0, metavar="N")
     save_template.add_argument("--approval", choices=("auto", "confirm"), default="confirm")
     save_template.add_argument("--auto-commit", action="store_true")
+    save_template.add_argument("--draft-pr", action="store_true")
     save_template.add_argument("--not-before", metavar="YYYY-MM-DD HH:MM")
     save_template.add_argument("--max-retries", type=int, default=2, metavar="N")
     save_template.add_argument("--retry-delay", type=int, default=10, metavar="MINUTES")
@@ -167,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     add_from_template.add_argument("--estimated-tokens", type=int, metavar="N")
     add_from_template.add_argument("--approval", choices=("auto", "confirm"))
     _add_auto_commit_toggle(add_from_template)
+    _add_draft_pr_toggle(add_from_template)
     add_from_template.add_argument("--not-before", metavar="YYYY-MM-DD HH:MM")
     add_from_template.add_argument("--max-retries", type=int, metavar="N")
     add_from_template.add_argument("--retry-delay", type=int, metavar="MINUTES")
@@ -257,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     update_task.add_argument("--estimated-tokens", type=int, metavar="N")
     update_task.add_argument("--approval", choices=("auto", "confirm"))
     _add_auto_commit_toggle(update_task)
+    _add_draft_pr_toggle(update_task)
     update_task.add_argument(
         "--not-before",
         metavar="YYYY-MM-DD HH:MM",
@@ -504,6 +512,23 @@ def _add_auto_commit_toggle(parser: argparse.ArgumentParser) -> None:
         dest="auto_commit",
         action="store_false",
         help="disable automatic Git commit for the task",
+    )
+
+
+def _add_draft_pr_toggle(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--draft-pr",
+        dest="draft_pr",
+        action="store_true",
+        default=None,
+        help="publish an automatic commit from a managed worktree as a draft PR",
+    )
+    group.add_argument(
+        "--no-draft-pr",
+        dest="draft_pr",
+        action="store_false",
+        help="disable draft PR publishing for the task",
     )
 
 

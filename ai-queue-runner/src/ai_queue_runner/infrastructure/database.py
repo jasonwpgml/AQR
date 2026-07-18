@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -285,6 +285,37 @@ def _migrate_v9_to_v10(session: Session) -> None:
     )
 
 
+def _migrate_v10_to_v11(session: Session) -> None:
+    task_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(tasks)")).mappings()
+    }
+    if "draft_pr" not in task_columns:
+        session.execute(
+            text("ALTER TABLE tasks ADD COLUMN draft_pr BOOLEAN NOT NULL DEFAULT 0")
+        )
+
+    run_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(task_runs)")).mappings()
+    }
+    if "draft_pr_url" not in run_columns:
+        session.execute(text("ALTER TABLE task_runs ADD COLUMN draft_pr_url TEXT"))
+    if "draft_pr_result" not in run_columns:
+        session.execute(text("ALTER TABLE task_runs ADD COLUMN draft_pr_result TEXT"))
+
+    template_columns = {
+        row["name"]
+        for row in session.execute(text("PRAGMA table_info(task_templates)")).mappings()
+    }
+    if "draft_pr" not in template_columns:
+        session.execute(
+            text(
+                "ALTER TABLE task_templates ADD COLUMN draft_pr BOOLEAN NOT NULL DEFAULT 0"
+            )
+        )
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -295,6 +326,7 @@ _MIGRATIONS = {
     7: _migrate_v7_to_v8,
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
+    10: _migrate_v10_to_v11,
 }
 
 
@@ -368,6 +400,8 @@ def _infer_legacy_schema_version(session: Session | Connection) -> int:
             text("SELECT name FROM sqlite_master WHERE type = 'table'")
         ).mappings()
     }
+    if "draft_pr" in task_columns:
+        return 11
     if "created_by" in task_columns and "task_events" in table_names:
         return 10
     if "auto_commit" in task_columns:

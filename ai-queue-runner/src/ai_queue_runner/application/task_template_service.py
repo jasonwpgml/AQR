@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from string import Formatter
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ai_queue_runner.application.task_service import SessionFactory, TaskDraft
 from ai_queue_runner.domain.clock import utcnow
@@ -32,12 +32,19 @@ class TaskTemplateDraft(BaseModel):
     estimated_tokens: int = Field(default=0, ge=0)
     approval_mode: ApprovalMode = ApprovalMode.CONFIRM
     auto_commit: bool = False
+    draft_pr: bool = False
     max_retries: int = Field(default=2, ge=0)
     retry_delay_minutes: int = Field(default=10, ge=0)
     recurrence_interval_days: int | None = Field(default=None, ge=1)
     not_before: datetime | None = None
     tags: list[str] = Field(default_factory=list)
     dependency_ids: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_auto_commit_for_draft_pr(self) -> TaskTemplateDraft:
+        if self.draft_pr and not self.auto_commit:
+            raise ValueError("draft_pr requires auto_commit")
+        return self
 
     @field_validator("not_before")
     @classmethod
@@ -75,6 +82,7 @@ class TaskTemplateView:
     estimated_tokens: int
     approval_mode: ApprovalMode
     auto_commit: bool
+    draft_pr: bool
     max_retries: int
     retry_delay_minutes: int
     recurrence_interval_days: int | None
@@ -189,6 +197,7 @@ class TaskTemplateService:
             "estimated_tokens": template.estimated_tokens,
             "approval_mode": template.approval_mode,
             "auto_commit": template.auto_commit,
+            "draft_pr": template.draft_pr,
             "max_retries": template.max_retries,
             "retry_delay_minutes": template.retry_delay_minutes,
             "recurrence_interval_days": template.recurrence_interval_days,
@@ -256,6 +265,7 @@ def _template_values(
         "estimated_tokens": draft.estimated_tokens,
         "approval_mode": draft.approval_mode,
         "auto_commit": draft.auto_commit,
+        "draft_pr": draft.draft_pr,
         "max_retries": draft.max_retries,
         "retry_delay_minutes": draft.retry_delay_minutes,
         "recurrence_interval_days": draft.recurrence_interval_days,
@@ -278,6 +288,7 @@ def _to_view(template: TaskTemplate) -> TaskTemplateView:
         estimated_tokens=template.estimated_tokens,
         approval_mode=template.approval_mode,
         auto_commit=template.auto_commit,
+        draft_pr=template.draft_pr,
         max_retries=template.max_retries,
         retry_delay_minutes=template.retry_delay_minutes,
         recurrence_interval_days=template.recurrence_interval_days,
