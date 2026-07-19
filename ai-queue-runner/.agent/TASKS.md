@@ -44,3 +44,4 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T039 opt-in push and GitHub draft PR publication after automatic commit
 [done] T040 headless automatic worker, live GUI observation mode, runtime ownership lock, root agent entrypoint, and Windows CI
 [done] T041 adaptive GUI refresh intervals with immediate manual refresh
+[done] T042 preserve successful runs across non-blocking usage warnings and sanitize last_error

@@ -114,13 +114,29 @@ def test_claude_real_session_limit_output_is_classified():
     assert ClaudeAdapter().classify_error(output, 1) is ErrorType.USAGE_LIMIT
 
 
-def test_claude_allowed_rate_limit_event_is_not_an_error():
+@pytest.mark.parametrize("status", ["allowed", "allowed_warning"])
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_claude_non_blocking_rate_limit_event_is_not_an_error(status, exit_code):
     output = (
-        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}\n'
+        f'{{"type":"rate_limit_event","rate_limit_info":{{"status":"{status}"}}}}\n'
         '{"type":"result","subtype":"success","is_error":false}'
     )
 
+    assert ClaudeAdapter().classify_error(output, exit_code) is ErrorType.UNKNOWN
+
+
+@pytest.mark.parametrize("status", ["rejected", "blocked", "denied", "exceeded"])
+def test_claude_blocking_rate_limit_status_is_an_error(status):
+    output = f'{{"type":"rate_limit_event","rate_limit_info":{{"status":"{status}"}}}}'
+
+    assert ClaudeAdapter().classify_error(output, 1) is ErrorType.USAGE_LIMIT
+
+
+def test_claude_malformed_limit_event_uses_nonzero_exit_heuristic_only():
+    output = '{"type":"rate_limit_event",malformed'
+
     assert ClaudeAdapter().classify_error(output, 0) is ErrorType.UNKNOWN
+    assert ClaudeAdapter().classify_error(output, 1) is ErrorType.USAGE_LIMIT
 
 
 def test_claude_extracts_exact_reset_from_rejected_rate_limit_event():
@@ -143,6 +159,24 @@ def test_claude_ignores_allowed_or_malformed_reset_events():
 
     assert ClaudeAdapter().extract_limit_reset(allowed) is None
     assert ClaudeAdapter().extract_limit_reset("{malformed json") is None
+
+
+@pytest.mark.parametrize(
+    "rate_limit_info",
+    [
+        '"status":"allowed_warning"',
+        '"status":"allowed","surpassedThreshold":true',
+    ],
+)
+def test_claude_extracts_warning_reset(rate_limit_info):
+    reset_at = (utcnow() + timedelta(hours=2)).replace(microsecond=0)
+    reset_timestamp = int(reset_at.replace(tzinfo=UTC).timestamp())
+    output = (
+        '{"type":"rate_limit_event","rate_limit_info":{'
+        f'{rate_limit_info},"resetsAt":{reset_timestamp}}}}}'
+    )
+
+    assert ClaudeAdapter().extract_limit_warning_reset(output) == reset_at
 
 
 def test_codex_extracts_relative_reset_with_tolerance():

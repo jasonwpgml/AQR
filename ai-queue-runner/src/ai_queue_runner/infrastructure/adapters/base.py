@@ -33,6 +33,8 @@ class AgentAdapter(Protocol):
 
     def extract_limit_reset(self, output: str) -> datetime | None: ...
 
+    def extract_limit_warning_reset(self, output: str) -> datetime | None: ...
+
     def classify_error(self, output: str, exit_code: int | None) -> ErrorType: ...
 
 
@@ -43,6 +45,11 @@ def summarize_output(_output: str) -> str | None:
 
 def extract_limit_reset(_output: str) -> datetime | None:
     """Default reset hook for adapters that do not expose one."""
+    return None
+
+
+def extract_limit_warning_reset(_output: str) -> datetime | None:
+    """Default warning-reset hook for adapters without structured warning events."""
     return None
 
 

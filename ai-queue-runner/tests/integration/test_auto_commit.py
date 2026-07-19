@@ -12,6 +12,7 @@ from ai_queue_runner.application.scheduler_service import reserve_next_task
 from ai_queue_runner.config.defaults import AppConfig
 from ai_queue_runner.domain.enums import AgentName, AgentStatus, TaskStatus
 from ai_queue_runner.domain.models import Task
+from ai_queue_runner.infrastructure.adapters.claude import ClaudeAdapter
 from ai_queue_runner.infrastructure.database import (
     create_db_engine,
     init_db,
@@ -173,6 +174,62 @@ async def test_successful_run_commits_changes_and_records_hash(tmp_path: Path) -
     body = _git(project, "log", "-1", "--pretty=%b").stdout
     assert f"Execution ID: {run_id}" in body
     assert "Agent: claude" in body
+
+
+async def test_allowed_warning_success_still_auto_commits(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _init_repository(project)
+    warning = (
+        '{"type":"rate_limit_event","rate_limit_info":'
+        '{"status":"allowed_warning","utilization":0.95}}'
+    )
+
+    config = AppConfig()
+    config.app.allowed_project_roots = [tmp_path]
+    config.app.logs_dir = tmp_path / "logs"
+    config.scheduler.auto_commit_enabled = True
+    engine = create_db_engine(tmp_path / "queue.db")
+    init_db(engine)
+    with make_session_factory(engine)() as session:
+        AgentStateRepository(session).get_or_create(AgentName.CLAUDE).status = (
+            AgentStatus.AVAILABLE
+        )
+        task = TaskRepository(session).add(
+            Task(
+                title="Warning result",
+                prompt="write the requested file",
+                project_path=str(project),
+                agent_policy=AgentName.CLAUDE.value,
+                auto_commit=True,
+            )
+        )
+        session.commit()
+        reserved = reserve_next_task(session, config, AgentName.CLAUDE)
+        assert reserved is not None and reserved.id == task.id
+        adapter = FakeAdapter(
+            name=AgentName.CLAUDE,
+            command=[
+                sys.executable,
+                "-c",
+                "from pathlib import Path; "
+                "Path('generated.txt').write_text('generated\\n'); "
+                f"print({warning!r})",
+            ],
+        )
+        claude = ClaudeAdapter()
+        adapter.classify_error = claude.classify_error
+        adapter.extract_limit_warning_reset = claude.extract_limit_warning_reset
+
+        run = await ExecutionService(config, ProcessRunner()).execute(
+            session,
+            reserved,
+            adapter,
+        )
+
+        assert reserved.status is TaskStatus.SUCCEEDED
+        assert run.auto_commit_result == "committed"
+        assert run.auto_commit_hash == _git(project, "rev-parse", "HEAD").stdout.strip()
+    engine.dispose()
 
 
 @pytest.mark.parametrize(
