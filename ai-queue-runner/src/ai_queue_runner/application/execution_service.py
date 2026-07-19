@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -28,6 +29,9 @@ from ai_queue_runner.infrastructure.adapters.base import (
     extract_limit_reset as default_extract_limit_reset,
 )
 from ai_queue_runner.infrastructure.adapters.base import (
+    extract_limit_warning_reset as default_extract_limit_warning_reset,
+)
+from ai_queue_runner.infrastructure.adapters.base import (
     summarize_output as default_summarize_output,
 )
 from ai_queue_runner.infrastructure.draft_pr import DraftPrPublisher, DraftPrResult
@@ -46,6 +50,10 @@ from ai_queue_runner.infrastructure.repositories import (
 
 _OUTPUT_TAIL_BYTES = 4096
 _SUMMARY_TAIL_BYTES = 64 * 1024
+_LAST_ERROR_MAX_CHARS = 1200
+_LONG_ENCODED_VALUE = re.compile(
+    r"(?<![\w+/=_-])[A-Za-z0-9+/=_-]{160,}(?![\w+/=_-])"
+)
 _RETRYABLE_FALLBACK_ERRORS = frozenset(
     {ErrorType.CRASH, ErrorType.TIMEOUT, ErrorType.UNKNOWN}
 )
@@ -345,18 +353,11 @@ class ExecutionService:
         run.exit_code = result.exit_code
         run.finished_at = result.finished_at
         output_tail = _read_output_tail(stderr_path, stdout_path)
-        classified_error = adapter.classify_error(output_tail, result.exit_code)
         settings = self._config.agents[adapter.name.value]
-        matched_unstructured_limit = (
-            result.exit_code != 0
-            and _matches_usage_limit(output_tail, settings.limit_patterns)
-        )
 
-        if (
-            result.exit_code == 0
-            and classified_error not in {ErrorType.AUTH, ErrorType.USAGE_LIMIT, ErrorType.CRASH}
-            and not matched_unstructured_limit
-        ):
+        # AIDEV-NOTE: a normal zero exit is authoritative even when successful JSONL
+        # contains advisory limit/auth text; post-processing must never discard its work.
+        if result.exit_code == 0:
             task.finished_at = result.finished_at
             task_repo.set_status(task, TaskStatus.SUCCEEDED)
             task.last_error = None
@@ -368,11 +369,27 @@ class ExecutionService:
                 task,
                 completed_at=result.finished_at,
             )
-            agent_state.status = AgentStatus.AVAILABLE
             agent_state.current_task_id = None
-            agent_state.available_at = None
             agent_state.last_error = None
+            warning_output = _read_output_tail(
+                stderr_path,
+                stdout_path,
+                max_bytes=_SUMMARY_TAIL_BYTES,
+            )
+            warning_reset = _extract_limit_warning_reset(adapter, warning_output)
+            if warning_reset is None:
+                agent_state.status = AgentStatus.AVAILABLE
+                agent_state.available_at = None
+            else:
+                agent_state.status = AgentStatus.COOLDOWN
+                agent_state.available_at = warning_reset
             return
+
+        classified_error = adapter.classify_error(output_tail, result.exit_code)
+        matched_unstructured_limit = _matches_usage_limit(
+            output_tail, settings.limit_patterns
+        )
+        error_summary = _summarize_error_output(output_tail)
 
         if (
             classified_error is ErrorType.USAGE_LIMIT
@@ -402,7 +419,7 @@ class ExecutionService:
             task.assigned_agent = None
             task.reserved_at = None
             task.started_at = None
-            task.last_error = _join_notes(output_tail, reset_note, fallback_note)
+            task.last_error = _join_notes(error_summary, reset_note, fallback_note)
             agent_state.status = AgentStatus.COOLDOWN
             agent_state.available_at = available_at
             agent_state.current_task_id = None
@@ -412,7 +429,7 @@ class ExecutionService:
         if classified_error is ErrorType.AUTH:
             run.error_type = ErrorType.AUTH
             task_repo.set_status(task, TaskStatus.BLOCKED)
-            task.last_error = output_tail or "authentication failed"
+            task.last_error = error_summary or "authentication failed"
             task.finished_at = result.finished_at
             agent_state.status = AgentStatus.ERROR
             agent_state.current_task_id = None
@@ -424,7 +441,7 @@ class ExecutionService:
             if result.timed_out
             else classified_error
         )
-        error_message = output_tail or _default_failure_message(result)
+        error_message = error_summary or _default_failure_message(result)
         self._record_failure(
             task_repo,
             run_repo,
@@ -601,13 +618,42 @@ def _extract_limit_reset(adapter: AgentAdapter, output: str) -> datetime | None:
         return None
 
 
+def _extract_limit_warning_reset(adapter: AgentAdapter, output: str) -> datetime | None:
+    extractor = getattr(
+        adapter,
+        "extract_limit_warning_reset",
+        default_extract_limit_warning_reset,
+    )
+    if not callable(extractor):
+        return None
+    try:
+        return validated_limit_reset(extractor(output))
+    except Exception:
+        return None
+
+
 def _matches_usage_limit(output: str, patterns: list[str]) -> bool:
     folded = output.casefold()
     return any(pattern.casefold() in folded for pattern in patterns)
 
 
 def _join_notes(*parts: str | None) -> str:
-    return "\n".join(part for part in parts if part)
+    return _truncate_last_error("\n".join(part for part in parts if part))
+
+
+def _summarize_error_output(output: str) -> str:
+    normalized = "\n".join(line.strip() for line in output.splitlines() if line.strip())
+    redacted = _LONG_ENCODED_VALUE.sub("[long encoded value omitted]", normalized)
+    return _truncate_last_error(redacted)
+
+
+def _truncate_last_error(error: str) -> str:
+    if len(error) <= _LAST_ERROR_MAX_CHARS:
+        return error
+    omitted = len(error) - _LAST_ERROR_MAX_CHARS
+    suffix = f"\n[earlier output truncated: {omitted} chars omitted]\n"
+    keep = _LAST_ERROR_MAX_CHARS - len(suffix)
+    return f"{suffix}{error[-keep:]}"
 
 
 def _default_failure_message(result: ProcessRunResult) -> str:

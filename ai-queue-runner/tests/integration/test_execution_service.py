@@ -462,7 +462,7 @@ def test_cancelled_recurring_task_does_not_enqueue_next_occurrence(
     assert repo.get_next_occurrence(task.id) is None
 
 
-async def test_structured_error_marker_overrides_zero_exit(
+async def test_zero_exit_is_authoritative_over_error_markers(
     session,
     config: AppConfig,
     project_path: Path,
@@ -477,14 +477,14 @@ async def test_structured_error_marker_overrides_zero_exit(
         max_retries=0,
     )
 
-    assert task.status is TaskStatus.BLOCKED
+    assert task.status is TaskStatus.SUCCEEDED
     assert task.retry_count == 0
     assert run.exit_code == 0
-    assert run.error_type is ErrorType.AUTH
+    assert run.error_type is None
     agent_state = AgentStateRepository(session).get(AgentName.CLAUDE)
     assert agent_state is not None
-    assert agent_state.status is AgentStatus.ERROR
-    assert "authentication failed" in agent_state.last_error
+    assert agent_state.status is AgentStatus.AVAILABLE
+    assert agent_state.last_error is None
 
 
 async def test_usage_limit_returns_task_to_queue_and_cools_down_agent(
@@ -567,6 +567,58 @@ async def test_usage_limit_uses_exact_reset_extracted_from_output(
     assert state.status is AgentStatus.COOLDOWN
     assert state.available_at == reset_at
     assert reset_at.isoformat(sep=" ", timespec="seconds") in task.last_error
+
+
+async def test_allowed_warning_success_cools_agent_without_discarding_result(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    reset_at = (utcnow() + timedelta(hours=2)).replace(microsecond=0)
+    reset_timestamp = int(reset_at.replace(tzinfo=UTC).timestamp())
+    event = (
+        '{"type":"rate_limit_event","rate_limit_info":'
+        f'{{"status":"allowed_warning","resetsAt":{reset_timestamp},'
+        '"utilization":0.95}}'
+    )
+    adapter = python_adapter(f"print({event!r})")
+    claude = ClaudeAdapter()
+    adapter.classify_error = claude.classify_error
+    adapter.extract_limit_warning_reset = claude.extract_limit_warning_reset
+
+    task, run = await execute_reserved(session, config, project_path, adapter)
+
+    state = AgentStateRepository(session).get(adapter.name)
+    assert run.exit_code == 0
+    assert run.error_type is None
+    assert task.status is TaskStatus.SUCCEEDED
+    assert task.last_error is None
+    assert state.status is AgentStatus.COOLDOWN
+    assert state.available_at == reset_at
+
+
+async def test_last_error_redacts_encoded_payload_and_limits_length(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    encoded = "A" * 3000
+    adapter = python_adapter(
+        f"import sys; print('failure payload {encoded}', file=sys.stderr); sys.exit(3)"
+    )
+
+    task, _run = await execute_reserved(
+        session,
+        config,
+        project_path,
+        adapter,
+        max_retries=0,
+    )
+
+    assert task.status is TaskStatus.FAILED
+    assert "[long encoded value omitted]" in task.last_error
+    assert encoded[:160] not in task.last_error
+    assert len(task.last_error) <= 1200
 
 
 async def test_success_output_discussing_rate_limits_remains_successful(
