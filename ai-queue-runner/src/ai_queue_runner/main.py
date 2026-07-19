@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ai-queue-runner",
-        description="Local task queue scheduler for Claude and Codex CLIs",
+        description="Local task queue scheduler for Claude, Codex, and Gemini CLIs",
     )
     parser.add_argument("--config", type=Path, default=None, help="path to config.toml")
     parser.add_argument(
@@ -74,7 +74,9 @@ def main(argv: list[str] | None = None) -> int:
     add_task.add_argument("--title", required=True, help="task title")
     add_task.add_argument("--prompt", required=True, help="prompt sent to the selected AI")
     add_task.add_argument("--project", type=Path, required=True, help="absolute project path")
-    add_task.add_argument("--agent", choices=("claude", "codex", "any"), default="any")
+    add_task.add_argument(
+        "--agent", choices=("claude", "codex", "gemini", "any"), default="any"
+    )
     add_task.add_argument("--priority", type=int, default=50, metavar="0-100")
     add_task.add_argument(
         "--estimated-tokens",
@@ -129,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     save_template.add_argument("--title", required=True, help="template task title")
     save_template.add_argument("--prompt", required=True, help="template task prompt")
     save_template.add_argument("--project", type=Path, help="default absolute project path")
-    save_template.add_argument("--agent", choices=("claude", "codex", "any"), default="any")
+    save_template.add_argument(
+        "--agent", choices=("claude", "codex", "gemini", "any"), default="any"
+    )
     save_template.add_argument("--priority", type=int, default=50, metavar="0-100")
     save_template.add_argument("--estimated-tokens", type=int, default=0, metavar="N")
     save_template.add_argument("--approval", choices=("auto", "confirm"), default="confirm")
@@ -172,7 +176,9 @@ def main(argv: list[str] | None = None) -> int:
     add_from_template.add_argument("--title", help="override the rendered title")
     add_from_template.add_argument("--prompt", help="override the rendered prompt")
     add_from_template.add_argument("--project", type=Path, help="override project path")
-    add_from_template.add_argument("--agent", choices=("claude", "codex", "any"))
+    add_from_template.add_argument(
+        "--agent", choices=("claude", "codex", "gemini", "any")
+    )
     add_from_template.add_argument("--priority", type=int, metavar="0-100")
     add_from_template.add_argument("--estimated-tokens", type=int, metavar="N")
     add_from_template.add_argument("--approval", choices=("auto", "confirm"))
@@ -263,7 +269,9 @@ def main(argv: list[str] | None = None) -> int:
     update_task.add_argument("--title", help="new task title")
     update_task.add_argument("--prompt", help="new prompt")
     update_task.add_argument("--project", type=Path, help="new absolute project path")
-    update_task.add_argument("--agent", choices=("claude", "codex", "any"))
+    update_task.add_argument(
+        "--agent", choices=("claude", "codex", "gemini", "any")
+    )
     update_task.add_argument("--priority", type=int, metavar="0-100")
     update_task.add_argument("--estimated-tokens", type=int, metavar="N")
     update_task.add_argument("--approval", choices=("auto", "confirm"))
@@ -378,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     set_agent = subcommands.add_parser(
         "set-agent", help="set manual agent availability"
     )
-    set_agent.add_argument("agent", choices=("claude", "codex"))
+    set_agent.add_argument("agent", choices=("claude", "codex", "gemini"))
     set_agent.add_argument("state", choices=("available", "cooldown", "disabled"))
     set_agent.add_argument(
         "--until",
@@ -587,7 +595,11 @@ def run_desktop_app(
     from ai_queue_runner.application.prompt_template_service import PromptTemplateService
     from ai_queue_runner.application.runtime import QueueRuntime
     from ai_queue_runner.application.task_service import TaskService
-    from ai_queue_runner.infrastructure.adapters import ClaudeAdapter, CodexAdapter
+    from ai_queue_runner.infrastructure.adapters import (
+        ClaudeAdapter,
+        CodexAdapter,
+        GeminiAdapter,
+    )
     from ai_queue_runner.infrastructure.database import (
         create_db_engine,
         init_db,
@@ -605,6 +617,7 @@ def run_desktop_app(
     adapters = {
         "claude": ClaudeAdapter(config.agents["claude"]),
         "codex": CodexAdapter(config.agents["codex"]),
+        "gemini": GeminiAdapter(config.agents["gemini"]),
     }
     task_service = TaskService(session_factory, config)
     prompt_template_service = PromptTemplateService(session_factory)

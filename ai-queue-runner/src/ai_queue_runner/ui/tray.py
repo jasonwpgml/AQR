@@ -44,7 +44,7 @@ class QueueSystemTray(QSystemTrayIcon):
         self.next_task_action.setEnabled(False)
         self.menu.addAction(self.next_task_action)
 
-        for agent in (AgentName.CLAUDE, AgentName.CODEX):
+        for agent in AgentName:
             submenu = self.menu.addMenu(f"{agent.value.title()} 상태")
             available = submenu.addAction("사용 가능")
             available.triggered.connect(

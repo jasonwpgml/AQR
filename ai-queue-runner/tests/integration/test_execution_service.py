@@ -296,6 +296,36 @@ async def test_any_failure_prefers_other_agent_on_next_retry(
     assert switched.assigned_agent is AgentName.CODEX
 
 
+async def test_any_fallback_uses_third_agent_when_preferred_agent_is_unavailable(
+    session,
+    config: AppConfig,
+    project_path: Path,
+) -> None:
+    config.agents["gemini"].enabled = True
+    adapter = python_adapter("import sys; sys.exit(7)")
+    task = reserve_task(
+        session,
+        config,
+        project_path,
+        adapter,
+        agent_policy="any",
+        max_retries=2,
+        retry_delay_minutes=0,
+    )
+    AgentStateRepository(session).get_or_create(AgentName.GEMINI).status = (
+        AgentStatus.AVAILABLE
+    )
+    session.commit()
+
+    run = await ExecutionService(config, ProcessRunner()).execute(session, task, adapter)
+    promote_retry_tasks(session)
+
+    assert run.fallback_to_agent is AgentName.CODEX
+    assert reserve_next_task(session, config, AgentName.CLAUDE) is None
+    switched = reserve_next_task(session, config, AgentName.GEMINI)
+    assert switched is not None and switched.id == task.id
+
+
 async def test_any_consecutive_failure_threshold_switches_agent(
     session,
     config: AppConfig,

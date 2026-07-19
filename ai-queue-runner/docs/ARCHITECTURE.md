@@ -36,7 +36,7 @@ flowchart TB
         REPO[Repository]
         DB[(SQLite WAL)]
         PROC[ProcessRunner\nstdin·로그·프로세스 트리]
-        ADAPTER[Claude/Codex Adapter]
+        ADAPTER[Claude/Codex/Gemini Adapter]
         POLICY[허용 경로 정책]
         GIT[GitWorktreeManager\n결정적 생성·재사용·안전 정리]
         GITCOMMIT[GitAutoCommitter\nclean 사전검사·성공 변경 커밋]
@@ -222,6 +222,8 @@ worktree 경로·브랜치를 추가합니다. 작업 행은 현재/재시도 �
 스키마 v11은 `tasks`와 `task_templates`에 작업별 `draft_pr` opt-in을 추가하고,
 `task_runs`에 PR URL과 생성·생략·실패 결과를 추가합니다. 기존 행은 false/null로
 이관되며 v10→v11 마이그레이션은 열 존재를 먼저 검사해 재시도할 수 있습니다.
+스키마 v12는 레거시 SQLite CHECK 제약의 에이전트 값에 `gemini`를 추가합니다. 기존 테이블의
+열·데이터·인덱스를 보존하며 제약이 이미 확장된 경우 아무 작업도 하지 않아 재시도할 수 있습니다.
 
 ## 3. 작업 상태 전이
 
@@ -306,10 +308,10 @@ flowchart TD
 스케줄링을 막지 않습니다.
 
 `any` 작업의 재시도 가능 실패가 설정 임계값(기본 1회)에 도달하면 `ExecutionService`가
-반대 AI를 `fallback_agent`로 기록합니다. `SchedulerService`는 그 AI가 설치되고 현재 사용
-가능할 때 이전 AI의 후보에서 작업을 제외하므로 틱 순서와 무관하게 결정적으로 전환합니다.
-대상 AI가 쿨다운·비활성·미설치이면 기존 AI도 다시 후보가 될 수 있어 작업이 영구 고정되지
-않습니다. 사용량 제한은 `retry_count`를 올리지 않고 즉시 같은 우선순위를 설정합니다.
+다른 AI를 `fallback_agent`로 기록합니다. `SchedulerService`는 선호 대체 AI가 사용 가능하면
+우선하고, 그렇지 않으면 최근 실패 AI가 아닌 다른 가용 AI를 허용합니다. 다른 가용 AI가
+없을 때만 기존 AI가 다시 후보가 되어 작업이 영구 고정되지 않습니다. 사용량 제한은
+`retry_count`를 올리지 않고 즉시 같은 우선순위를 설정합니다.
 전용 정책과 `fallback_enabled=false`에서는 이 규칙을 적용하지 않습니다.
 
 반복 규칙은 nullable 양의 일수로 표현하며 1일은 매일, 7일은 매주, 나머지는 N일
@@ -325,7 +327,7 @@ flowchart TD
 
 - 프로젝트 경로는 절대 경로·실재 디렉터리여야 하고 `allowed_project_roots` 아래여야 합니다.
 - 빈 허용 루트는 모든 실행을 차단합니다.
-- Claude는 `--permission-mode auto --no-session-persistence`, Codex는 `--sandbox workspace-write --ask-for-approval never --ephemeral` 조합을 사용합니다.
+- Claude는 `--permission-mode auto --no-session-persistence`, Codex는 `--sandbox workspace-write --ask-for-approval never --ephemeral`, Gemini는 `--output-format json --approval-mode yolo --sandbox` 조합을 사용합니다.
 - 사용자 프롬프트는 표준 입력으로 보내며 `task_runs.command_json`에 중복 저장하지 않습니다.
 - stdout/stderr는 파일로 스트리밍해 긴 출력으로 메모리가 증가하지 않게 합니다.
 - 취소·타임아웃·복구는 `psutil`로 전체 하위 프로세스 트리를 종료합니다.
@@ -363,14 +365,14 @@ flowchart TD
 | `application/worker.py` | 헤드리스 DB·어댑터·런타임 조립, 종료 신호 처리 |
 | `application/task_service.py` | 작업 CRUD·출처/관리 이벤트·프로젝트 범위 조회/삭제·원자적 배치/분할·복제·재시도·일일 집계 |
 | `application/task_template_service.py` | DB 작업 템플릿 CRUD·title/prompt 변수 치환·TaskDraft 생성 |
-| `application/workload_planning.py` | 명시적 토큰 예산·형제 의존 DAG 검증·결정적 Claude/Codex 분배 |
+| `application/workload_planning.py` | 명시적 토큰 예산·형제 의존 DAG 검증·결정적 다중 에이전트 분배 |
 | `application/agent_service.py` | 에이전트 상태·사용 가능 시각·쿨다운 승격 |
 | `application/scheduler_service.py` | 후보 필터·fallback 우선순위·점수·CAS 예약 |
 | `application/execution_service.py` | CLI 실행, 여섯 결과 경로, fallback·자동 커밋·draft PR 결정과 이력 기록 |
 | `application/worktree_service.py` | 격리 예약 준비·실패 시 exclusive 폴백·완료 worktree 정리 정책 |
 | `application/recurrence_service.py` | 성공한 반복 작업의 다음 회차를 원본 ID 기준으로 멱등 생성 |
 | `application/recovery_service.py` | 오래된 예약·재시도·고아 PID 복구 |
-| `infrastructure/adapters/` | 설치 확인, 안전한 명령 구성, 오류 분류 |
+| `infrastructure/adapters/` | Claude/Codex/Gemini 설치 확인, 안전한 명령 구성, 오류 분류 |
 | `infrastructure/process_runner.py` | 비동기 subprocess, stdin, 로그, 취소, 타임아웃 |
 | `infrastructure/runtime_owner.py` | DB별 교차 프로세스 스케줄러 잠금과 소유자 조회 |
 | `infrastructure/path_policy.py` | 프로젝트 허용 루트 검증 |

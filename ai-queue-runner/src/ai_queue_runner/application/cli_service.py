@@ -538,10 +538,7 @@ def _plan_batch(args: argparse.Namespace, service: TaskService) -> str:
     records = _workload_task_records(plan, created)
     payload = {
         "enqueued": not args.dry_run,
-        "budgets": {
-            "claude": plan.budgets.claude,
-            "codex": plan.budgets.codex,
-        },
+        "budgets": plan.budgets.model_dump(),
         "assigned_tokens": {
             agent.value: tokens for agent, tokens in plan.assigned_tokens.items()
         },
@@ -553,8 +550,7 @@ def _plan_batch(args: argparse.Namespace, service: TaskService) -> str:
     action = "계획" if args.dry_run else "원자적 등록"
     lines = [
         f"토큰 작업량 {action}: {len(records)}개",
-        f"Claude {plan.claude_tokens}/{plan.budgets.claude}, "
-        f"Codex {plan.codex_tokens}/{plan.budgets.codex}",
+        _workload_budget_text(plan),
     ]
     lines.extend(
         f"  {record['input_index']}: {record['assigned_agent']} "
@@ -577,10 +573,7 @@ def _split_task(args: argparse.Namespace, service: TaskService) -> str:
         "split": not args.dry_run,
         "original_task": _task_record(result.original),
         "rewired_dependent_ids": list(result.rewired_dependent_ids),
-        "budgets": {
-            "claude": plan.budgets.claude,
-            "codex": plan.budgets.codex,
-        },
+        "budgets": plan.budgets.model_dump(),
         "assigned_tokens": {
             agent.value: tokens for agent, tokens in plan.assigned_tokens.items()
         },
@@ -592,8 +585,7 @@ def _split_task(args: argparse.Namespace, service: TaskService) -> str:
     action = "validated" if args.dry_run else "split"
     lines = [
         f"Task #{args.task_id} {action} into {len(records)} child tasks",
-        f"Claude {plan.claude_tokens}/{plan.budgets.claude}, "
-        f"Codex {plan.codex_tokens}/{plan.budgets.codex}",
+        _workload_budget_text(plan),
     ]
     lines.extend(
         f"  {record['input_index']}: {record['assigned_agent']} "
@@ -627,6 +619,13 @@ def _workload_task_records(
             }
         )
     return records
+
+
+def _workload_budget_text(plan: WorkloadPlan) -> str:
+    return ", ".join(
+        f"{agent.value.title()} {tokens}/{plan.budgets.for_agent(agent)}"
+        for agent, tokens in plan.assigned_tokens.items()
+    )
 
 
 def _load_workload_batch(path: Path) -> WorkloadBatch:
@@ -863,6 +862,7 @@ def _daily_summary_record(summary: object) -> dict[str, Any]:
             "agent_run_counts": {
                 "claude": project.claude_run_count,
                 "codex": project.codex_run_count,
+                "gemini": project.gemini_run_count,
             },
             "fallback_count": project.fallback_count,
             "worktree_branches": list(project.worktree_branches),
@@ -892,6 +892,7 @@ def _daily_summary_record(summary: object) -> dict[str, Any]:
             "agent_run_counts": {
                 "claude": totals.claude_run_count,
                 "codex": totals.codex_run_count,
+                "gemini": totals.gemini_run_count,
             },
             "fallback_count": totals.fallback_count,
             "worktree_branches": list(totals.worktree_branches),
@@ -899,6 +900,7 @@ def _daily_summary_record(summary: object) -> dict[str, Any]:
             "usage_limit_wait_occurred": {
                 "claude": totals.claude_usage_limit_wait_occurred,
                 "codex": totals.codex_usage_limit_wait_occurred,
+                "gemini": totals.gemini_usage_limit_wait_occurred,
             },
         },
     }

@@ -1436,7 +1436,6 @@ Claude는 매 작업 후 아래를 확인한다.
 
 `[LATER]`
 
-- Gemini CLI 어댑터
 - OpenAI API / Anthropic API 비용 기반 라우팅
 - 원격 서버 실행
 - 웹 대시보드

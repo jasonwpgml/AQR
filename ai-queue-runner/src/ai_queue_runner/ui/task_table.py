@@ -38,6 +38,7 @@ _STATUS_LABELS = {
 _AGENT_LABELS = {
     AgentPolicy.CLAUDE.value: "Claude",
     AgentPolicy.CODEX.value: "Codex",
+    AgentPolicy.GEMINI.value: "Gemini",
     AgentPolicy.ANY.value: "Any",
 }
 _STATUS_COLORS = {

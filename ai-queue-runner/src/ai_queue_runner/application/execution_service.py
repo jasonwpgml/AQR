@@ -548,9 +548,18 @@ class ExecutionService:
             or task.agent_policy is not AgentPolicy.ANY
         ):
             return None
-        fallback_agent = (
-            AgentName.CODEX if run.agent is AgentName.CLAUDE else AgentName.CLAUDE
+        fallback_agent = next(
+            (
+                candidate
+                for candidate in AgentName
+                if candidate is not run.agent
+                and (settings := self._config.agents.get(candidate.value)) is not None
+                and settings.enabled
+            ),
+            None,
         )
+        if fallback_agent is None:
+            return None
         task.fallback_agent = fallback_agent
         run.fallback_to_agent = fallback_agent
         note = f"fallback scheduled: {run.agent.value} -> {fallback_agent.value} ({reason})"

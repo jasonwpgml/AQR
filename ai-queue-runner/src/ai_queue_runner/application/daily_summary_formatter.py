@@ -10,7 +10,8 @@ def format_daily_summary(summary: object) -> str:
         _summary_counts_text("전체", totals),
         "사용량 제한 대기 발생: "
         f"claude={_yes_no(totals.claude_usage_limit_wait_occurred)}, "
-        f"codex={_yes_no(totals.codex_usage_limit_wait_occurred)}",
+        f"codex={_yes_no(totals.codex_usage_limit_wait_occurred)}, "
+        f"gemini={_yes_no(totals.gemini_usage_limit_wait_occurred)}",
     ]
     if not summary.projects:
         lines.append("프로젝트 활동이 없습니다.")
@@ -34,7 +35,8 @@ def _summary_counts_text(label: str, value: object) -> str:
         f"{label}: 완료={value.succeeded_count} 실패={value.failed_count} "
         f"차단={value.blocked_count} 취소={value.cancelled_count} · "
         f"실행 시간={_duration_text(value.total_runtime_seconds)} · "
-        f"실행 claude={value.claude_run_count} codex={value.codex_run_count} · "
+        f"실행 claude={value.claude_run_count} codex={value.codex_run_count} "
+        f"gemini={value.gemini_run_count} · "
         f"fallback={value.fallback_count}"
     )
 

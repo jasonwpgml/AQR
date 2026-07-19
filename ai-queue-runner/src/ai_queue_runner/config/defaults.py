@@ -15,12 +15,19 @@ from pydantic import BaseModel, ConfigDict, Field
 DEFAULT_CONFIG_FILENAME = "config.toml"
 
 # AIDEV-NOTE: these include Claude's observed JSONL `rate_limit_event`/session-limit
-# output, but must stay user-editable because both CLIs can change wording (§7.2).
+# output, but must stay user-editable because agent CLIs can change wording (§7.2).
 DEFAULT_LIMIT_PATTERNS = [
     "usage limit",
     "rate limit",
     "rate_limit",
     "session limit",
+]
+GEMINI_LIMIT_PATTERNS = [
+    *DEFAULT_LIMIT_PATTERNS,
+    "resource exhausted",
+    "resource_exhausted",
+    "quota will reset",
+    "exhausted your capacity",
 ]
 
 
@@ -72,6 +79,11 @@ def default_agents() -> dict[str, AgentSection]:
     return {
         "claude": AgentSection(executable="claude"),
         "codex": AgentSection(executable="codex"),
+        "gemini": AgentSection(
+            enabled=False,
+            executable="gemini",
+            limit_patterns=list(GEMINI_LIMIT_PATTERNS),
+        ),
     }
 
 

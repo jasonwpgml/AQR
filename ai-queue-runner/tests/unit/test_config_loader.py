@@ -13,7 +13,8 @@ def test_defaults_when_no_config_file(tmp_path, monkeypatch):
     assert config.app.db_path == tmp_path / "local" / "AIQueueRunner" / "data/queue.db"
     assert config.app.logs_dir == tmp_path / "local" / "AIQueueRunner" / "logs"
     assert config.app.worktrees_dir == tmp_path / "local" / "AIQueueRunner" / "worktrees"
-    assert set(config.agents) == {"claude", "codex"}
+    assert set(config.agents) == {"claude", "codex", "gemini"}
+    assert config.agents["gemini"].enabled is False
     assert config.scheduler.fallback_enabled is True
     assert config.scheduler.fallback_failure_threshold == 1
     assert config.scheduler.worktree_parallel_enabled is False

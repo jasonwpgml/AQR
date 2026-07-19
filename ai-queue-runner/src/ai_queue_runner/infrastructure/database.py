@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_queue_runner.domain.models import Base, Setting
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def _migrate_v1_to_v2(session: Session) -> None:
@@ -316,6 +316,53 @@ def _migrate_v10_to_v11(session: Session) -> None:
         )
 
 
+def _migrate_v11_to_v12(session: Session) -> None:
+    """Rebuild enum-constrained tables so Gemini is a valid persisted agent."""
+    table_names = ("tasks", "agent_states", "task_runs", "task_templates")
+    for name in table_names:
+        create_sql = session.execute(
+            text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = :name"
+            ),
+            {"name": name},
+        ).scalar_one()
+        expanded_sql = create_sql.replace(
+            "'claude', 'codex', 'any'",
+            "'claude', 'codex', 'gemini', 'any'",
+        ).replace(
+            "'claude', 'codex'",
+            "'claude', 'codex', 'gemini'",
+        )
+        if expanded_sql == create_sql:
+            continue
+        backup = f"__aqr_v11_{name}"
+        indexes = session.execute(
+            text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND tbl_name = :name AND sql IS NOT NULL"
+            ),
+            {"name": name},
+        ).scalars().all()
+        session.execute(text(f'CREATE TABLE "{backup}" AS SELECT * FROM "{name}"'))
+        session.execute(text(f'DROP TABLE "{name}"'))
+        session.execute(text(expanded_sql))
+        columns = [
+            row["name"]
+            for row in session.execute(text(f'PRAGMA table_info("{backup}")')).mappings()
+        ]
+        column_sql = ", ".join(f'"{column}"' for column in columns)
+        session.execute(
+            text(
+                f'INSERT INTO "{name}" ({column_sql}) '
+                f'SELECT {column_sql} FROM "{backup}"'
+            )
+        )
+        session.execute(text(f'DROP TABLE "{backup}"'))
+        for index_sql in indexes:
+            session.execute(text(index_sql))
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -327,6 +374,7 @@ _MIGRATIONS = {
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
     10: _migrate_v10_to_v11,
+    11: _migrate_v11_to_v12,
 }
 
 
@@ -355,37 +403,47 @@ def init_db(engine: Engine) -> None:
     with engine.connect() as connection:
         # AIDEV-NOTE: every process takes the same SQLite writer lock before schema
         # inspection. Otherwise two AI CLI reads can race the same ALTER TABLE migration.
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
         connection.exec_driver_sql("BEGIN IMMEDIATE")
-        had_tasks = inspect(connection).has_table("tasks")
-        legacy_version = None
-        if had_tasks:
-            legacy_version = _infer_legacy_schema_version(connection)
-        Base.metadata.create_all(connection)
-        with Session(bind=connection) as session:
-            stored = session.get(Setting, "schema_version")
-            if stored is None:
-                version = legacy_version if legacy_version is not None else SCHEMA_VERSION
-                stored = Setting(key="schema_version", value=version)
-                session.add(stored)
-            else:
-                version = int(stored.value)
-            if version > SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"database schema v{version} is newer than app schema v{SCHEMA_VERSION}"
-                )
-            # AIDEV-NOTE: create_all() never adds columns to existing SQLite tables;
-            # migrations must be safe to retry before advancing the stored version.
-            while version < SCHEMA_VERSION:
-                migration = _MIGRATIONS.get(version)
-                if migration is None:
+        try:
+            had_tasks = inspect(connection).has_table("tasks")
+            legacy_version = None
+            if had_tasks:
+                legacy_version = _infer_legacy_schema_version(connection)
+            Base.metadata.create_all(connection)
+            with Session(bind=connection) as session:
+                stored = session.get(Setting, "schema_version")
+                if stored is None:
+                    version = legacy_version if legacy_version is not None else SCHEMA_VERSION
+                    stored = Setting(key="schema_version", value=version)
+                    session.add(stored)
+                else:
+                    version = int(stored.value)
+                if version > SCHEMA_VERSION:
                     raise RuntimeError(
-                        f"no migration path from schema v{version} to v{SCHEMA_VERSION}"
+                        f"database schema v{version} is newer than app schema v{SCHEMA_VERSION}"
                     )
-                migration(session)
-                version += 1
-                stored.value = version
-            session.flush()
-            connection.commit()
+                # AIDEV-NOTE: create_all() never adds columns to existing SQLite tables;
+                # migrations must be safe to retry before advancing the stored version.
+                while version < SCHEMA_VERSION:
+                    migration = _MIGRATIONS.get(version)
+                    if migration is None:
+                        raise RuntimeError(
+                            f"no migration path from schema v{version} to v{SCHEMA_VERSION}"
+                        )
+                    migration(session)
+                    version += 1
+                    stored.value = version
+                session.flush()
+                violations = session.execute(text("PRAGMA foreign_key_check")).all()
+                if violations:
+                    raise RuntimeError("database contains foreign-key violations")
+                connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
 def _infer_legacy_schema_version(session: Session | Connection) -> int:

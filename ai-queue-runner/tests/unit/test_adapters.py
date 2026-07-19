@@ -12,6 +12,7 @@ from ai_queue_runner.domain.enums import ErrorType
 from ai_queue_runner.domain.models import Task
 from ai_queue_runner.infrastructure.adapters.claude import ClaudeAdapter
 from ai_queue_runner.infrastructure.adapters.codex import CodexAdapter
+from ai_queue_runner.infrastructure.adapters.gemini import GeminiAdapter
 
 
 def make_task(**overrides) -> Task:
@@ -75,6 +76,51 @@ def test_codex_command_matches_inspected_cli_contract(monkeypatch, tmp_path):
     assert len(command) == 14
     assert command[-1] == "-"
     assert task.prompt in CodexAdapter().build_stdin(task)
+
+
+def test_gemini_command_matches_documented_headless_contract(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    task = make_task()
+    adapter = GeminiAdapter(AgentSection(enabled=True, executable="gemini"))
+
+    assert adapter.build_command(task) == [
+        "gemini",
+        "--prompt",
+        "",
+        "--output-format",
+        "json",
+        "--approval-mode",
+        "yolo",
+        "--sandbox",
+    ]
+    assert task.prompt in adapter.build_stdin(task)
+
+
+def test_gemini_classifies_fake_json_errors_and_exit_zero_is_authoritative():
+    adapter = GeminiAdapter(
+        AgentSection(enabled=True, limit_patterns=["resource_exhausted"])
+    )
+    quota = '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}'
+    auth = '{"error":{"code":401,"message":"Please sign in"}}'
+
+    assert adapter.classify_error(quota, 1) is ErrorType.USAGE_LIMIT
+    assert adapter.classify_error(auth, 1) is ErrorType.AUTH
+    assert adapter.classify_error(quota, 0) is ErrorType.UNKNOWN
+
+
+def test_gemini_extracts_documented_relative_reset_and_summary():
+    earliest = utcnow() + timedelta(hours=8, minutes=44, seconds=7)
+    adapter = GeminiAdapter(AgentSection(enabled=True))
+
+    reset_at = adapter.extract_limit_reset(
+        "You have exhausted your capacity. Your quota will reset after 8h44m7s."
+    )
+    latest = utcnow() + timedelta(hours=8, minutes=44, seconds=7)
+
+    assert reset_at is not None
+    assert earliest <= reset_at <= latest
+    assert adapter.summarize_output('{"response":"  completed  ","stats":{}}') == "completed"
+    assert adapter.summarize_output('{"error":{"message":"failed"}}') is None
 
 
 @pytest.mark.parametrize("adapter_type", [ClaudeAdapter, CodexAdapter])
@@ -388,3 +434,4 @@ def test_prompt_templates_are_packaged():
 
     assert (package_root / "claude_wrapper.txt").is_file()
     assert (package_root / "codex_wrapper.txt").is_file()
+    assert (package_root / "gemini_wrapper.txt").is_file()
