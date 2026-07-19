@@ -68,7 +68,7 @@ flowchart TB
     REPO --> TRANS
 ```
 
-의존 방향은 UI → application → domain/infrastructure입니다. UI는 DB 세션이나 프로세스를 직접 다루지 않습니다. 스케줄러 틱과 각 CLI 실행은 별도 SQLAlchemy 세션을 소유하며 UI 스레드를 막지 않습니다.
+의존 방향은 UI → application → domain/infrastructure입니다. UI는 DB 세션이나 프로세스를 직접 다루지 않습니다. 스케줄러 틱과 각 CLI 실행은 별도 SQLAlchemy 세션을 소유하며 UI 스레드를 막지 않습니다. GUI와 헤드리스 worker는 같은 QueueRuntime을 조립하며, DB별 OS 파일 잠금으로 백그라운드 스케줄러 소유자를 하나만 허용합니다. GUI는 잠금을 소유하지 않아도 같은 DB와 로그를 읽어 관찰할 수 있습니다.
 
 ## 2. 데이터 모델
 
@@ -255,9 +255,14 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
+    OWNER{DB별 런타임 잠금} -->|GUI 또는 worker 한 곳만 획득| TICK
+    OWNER -->|외부 worker가 소유| OBSERVE[GUI 관찰 모드\nDB·로그 5초 갱신]
     TICK[주기 틱] --> MAINT[재시도/쿨다운/오래된 예약 복구]
     MAINT --> AG{설치되고 사용 가능한 AI}
-    AG --> FILTER[상태·시각·정책·선행 작업·프로젝트 잠금]
+    AG --> MODE{헤드리스 worker?}
+    MODE -- 예 --> AUTOONLY[auto 승인 작업만 허용]
+    MODE -- 아니오 --> FILTER[상태·시각·정책·선행 작업·프로젝트 잠금]
+    AUTOONLY --> FILTER
     FILTER --> SCORE[우선순위 + 대기 + 전용 + 의존 보너스 - 재시도 패널티]
     SCORE --> CAS[한 트랜잭션의 CAS 예약\ntask + agent_state]
     CAS --> ISOLATE{동일 프로젝트 잠금 충돌?}
@@ -354,7 +359,8 @@ flowchart TD
 
 | 경로 | 역할 |
 |---|---|
-| `application/runtime.py` | APScheduler 틱, asyncio 실행 루프, 승인·거절·중단 |
+| `application/runtime.py` | APScheduler 틱, asyncio 실행 루프, 승인·거절·중단, auto 전용 모드 |
+| `application/worker.py` | 헤드리스 DB·어댑터·런타임 조립, 종료 신호 처리 |
 | `application/task_service.py` | 작업 CRUD·출처/관리 이벤트·프로젝트 범위 조회/삭제·원자적 배치/분할·복제·재시도·일일 집계 |
 | `application/task_template_service.py` | DB 작업 템플릿 CRUD·title/prompt 변수 치환·TaskDraft 생성 |
 | `application/workload_planning.py` | 명시적 토큰 예산·형제 의존 DAG 검증·결정적 Claude/Codex 분배 |
@@ -366,6 +372,7 @@ flowchart TD
 | `application/recovery_service.py` | 오래된 예약·재시도·고아 PID 복구 |
 | `infrastructure/adapters/` | 설치 확인, 안전한 명령 구성, 오류 분류 |
 | `infrastructure/process_runner.py` | 비동기 subprocess, stdin, 로그, 취소, 타임아웃 |
+| `infrastructure/runtime_owner.py` | DB별 교차 프로세스 스케줄러 잠금과 소유자 조회 |
 | `infrastructure/path_policy.py` | 프로젝트 허용 루트 검증 |
 | `infrastructure/git_worktrees.py` | Git worktree/브랜치 결정적 생성·재사용과 미병합 보호 정리 |
 | `infrastructure/git_auto_commit.py` | 실행 전 clean 검사, 성공 변경 staging·커밋, 해시/사유 결과 |

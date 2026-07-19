@@ -42,3 +42,5 @@ Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
 [done] T037 opt-in automatic Git commit after successful execution
 [done] T038 AI-friendly task provenance, scoped management, audit history, and serialized migrations
 [done] T039 opt-in push and GitHub draft PR publication after automatic commit
+[done] T040 headless automatic worker, live GUI observation mode, runtime ownership lock, root agent entrypoint, and Windows CI
+[done] T041 adaptive GUI refresh intervals with immediate manual refresh

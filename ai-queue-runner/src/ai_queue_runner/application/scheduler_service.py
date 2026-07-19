@@ -15,6 +15,7 @@ from ai_queue_runner.domain.enums import (
     AgentName,
     AgentPolicy,
     AgentStatus,
+    ApprovalMode,
     TaskStatus,
 )
 from ai_queue_runner.domain.models import AgentState, Task
@@ -37,6 +38,7 @@ def reserve_next_task(
     max_attempts: int = 3,
     eligible_agents: Collection[AgentName] | None = None,
     exclude_task_ids: Collection[int] = (),
+    approval_modes: Collection[ApprovalMode] | None = None,
 ) -> Task | None:
     """Atomically pick and reserve the best task for ``agent`` (plan §5.4).
 
@@ -70,6 +72,7 @@ def reserve_next_task(
                 states[agent],
                 now_,
                 available_agents=available_agents,
+                approval_modes=approval_modes,
             )
             if candidate is None:
                 session.rollback()
@@ -225,6 +228,7 @@ class SchedulerService:
         now: datetime | None = None,
         *,
         available_agents: Collection[AgentName] | None = None,
+        approval_modes: Collection[ApprovalMode] | None = None,
     ) -> Task | None:
         """Return the highest-ranked candidate, leaving reservation to the caller."""
         now = utcnow() if now is None else now
@@ -243,6 +247,7 @@ class SchedulerService:
                 now,
                 locked_projects,
                 available_agents,
+                approval_modes,
             ):
                 continue
             blocked_dependents_count = sum(
@@ -299,9 +304,11 @@ class SchedulerService:
         now: datetime,
         locked_projects: set[str],
         available_agents: set[AgentName],
+        approval_modes: Collection[ApprovalMode] | None,
     ) -> bool:
         return bool(
             task.status is TaskStatus.WAITING
+            and (approval_modes is None or task.approval_mode in approval_modes)
             and (task.not_before is None or task.not_before <= now)
             and task.agent_policy in (AgentPolicy(agent.value), AgentPolicy.ANY)
             and task.retry_count <= task.max_retries

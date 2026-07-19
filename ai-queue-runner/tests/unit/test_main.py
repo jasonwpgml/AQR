@@ -55,6 +55,22 @@ def test_main_prints_version_without_loading_config(capsys):
     assert "AI Queue Runner 0.1.0" in capsys.readouterr().out
 
 
+def test_main_runs_headless_worker_without_composing_desktop(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "ai_queue_runner.application.worker.run_worker",
+        lambda config: calls.append(config) or 0,
+    )
+    monkeypatch.setattr(
+        "ai_queue_runner.main.run_desktop_app",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("UI started")),
+    )
+
+    assert main(["worker"]) == 0
+    assert len(calls) == 1
+
+
 def test_main_reports_config_error(tmp_path, capsys):
     assert main(["--config", str(tmp_path / "missing.toml")]) == 2
     assert "config error" in capsys.readouterr().err

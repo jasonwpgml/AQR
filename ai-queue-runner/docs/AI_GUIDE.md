@@ -26,15 +26,32 @@
 
 1. `config.toml`의 `[app] global_auto_run = true`
 2. 작업의 승인 모드가 `auto` → **작업 추가 시 `--approval auto`를 명시할 것** (기본값은 `confirm`)
-3. GUI 앱이 떠 있고 스케줄러가 시작된 상태
-   - 실행 엔진은 GUI 프로세스 안에서만 동작한다. CLI는 큐(DB)만 조작한다.
-   - 트레이로 최소화된 상태여도 스케줄러는 계속 돈다.
+3. GUI 스케줄러 또는 worker 프로세스가 실행 중인 상태
+   - worker는 승인 모드가 auto인 작업만 예약·실행한다.
+   - confirm 작업은 worker가 선점하지 않으며 GUI에서 직접 실행·승인한다.
+   - worker 실행 중 GUI를 열면 같은 DB와 로그를 5초마다 읽는 관찰 모드가 된다.
 4. 실행할 에이전트 상태가 `available` → **새 DB는 `unknown`으로 시작하므로 최초 1회
    `set-agent codex available`(또는 claude)을 실행할 것.** `unknown`/`limited` 에이전트에는
    작업이 예약되지 않는다. 현재 상태는 `queue-status`로 확인.
 
 `--approval confirm` 작업은 GUI 승인 창에서 사용자가 허용해야 실행된다.
 승인 창에서 거부된 작업은 `blocked` 상태로 남는다 → `retry-task`로 재대기시킬 수 있다.
+
+## 헤드리스 워커
+
+~~~powershell
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml worker
+~~~
+
+워커는 종료 신호를 받을 때까지 APScheduler와 실행 루프를 유지합니다. DB 옆의 OS 파일
+잠금으로 스케줄러 소유자를 하나만 허용하므로 같은 DB에 두 번째 워커나 GUI 스케줄러를
+시작할 수 없습니다. 잠금 파일은 남아도 프로세스 종료 시 OS 잠금이 자동 해제됩니다.
+
+GUI는 실행권 없이도 언제든 열 수 있습니다. 작업 목록·상세·로그·달력은 관찰 모드에서
+5초마다, 대기·일시정지 중에는 10초마다 갱신됩니다. GUI 스케줄러 실행 중에는 승인과
+상태 알림을 위해 1초를 유지하며 새로고침 버튼은 항상 즉시 갱신합니다.
+GUI를 닫아도 외부 워커의 실행은 계속됩니다. global_auto_run이 false이면 워커는 작업을
+예약하지 않습니다.
 
 ## 명령 요약
 

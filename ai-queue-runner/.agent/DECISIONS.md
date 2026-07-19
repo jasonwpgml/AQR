@@ -58,3 +58,5 @@ D053 task_events intentionally has no task foreign key so management history sur
 D054 Schema initialization takes one SQLite BEGIN IMMEDIATE writer transaction around legacy inference, create_all, and every migration so concurrent AI CLI commands cannot race DDL
 D055 Draft PR publication requires global and per-task opt-in plus an actual automatic commit; draft_pr without auto_commit is rejected for tasks and templates.
 D056 Automatic push is limited to the managed aqr/T<ID> branch of an actual worktree run. Non-worktree current branches are never pushed; publication skips and failures are recorded on task_runs without changing succeeded.
+D057 A DB-specific OS file lease permits one background scheduler owner across GUI and headless processes. The headless worker reserves only auto-approval tasks and only when global_auto_run is enabled; a GUI opened alongside it remains a live DB/log observer and does not stop worker-owned executions when closed.
+D058 GUI polling is adaptive: 1 second while its scheduler runs, 5 seconds while observing an external runtime, and 10 seconds while idle or paused. The existing refresh button always performs an immediate read.

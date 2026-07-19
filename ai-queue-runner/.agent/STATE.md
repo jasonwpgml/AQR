@@ -1,12 +1,13 @@
 ```yaml
 phase: 7
-current_goal: "T039 opt-in draft PR publication after automatic commit"
-active_task: "T039"
-owner: codex
-status: done
+current_goal: null
+active_task: null
+owner: null
+status: idle
 blocked_by: null
+last_completed_task: "T041"
 last_verified:
   command: "..\\.venv\\Scripts\\python -m pytest -q; ..\\.venv\\Scripts\\python -m ruff check src tests"
-  result: "341 passed in 21.24s; All checks passed!"
-next: "Claude review and commit T039, then rebuild/restart the packaged app to migrate its local DB to v11"
+  result: "347 passed in 30.93s; All checks passed!"
+next: "Rebuild the packaged app when distribution artifacts need the worker command and observation mode."
 ```
