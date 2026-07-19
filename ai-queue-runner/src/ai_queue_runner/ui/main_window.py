@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 640)
 
         self.agent_widgets = {
-            agent: AgentStatusWidget(agent) for agent in (AgentName.CLAUDE, AgentName.CODEX)
+            agent: AgentStatusWidget(agent) for agent in AgentName
         }
         for widget in self.agent_widgets.values():
             widget.availability_changed.connect(self._set_agent_availability)

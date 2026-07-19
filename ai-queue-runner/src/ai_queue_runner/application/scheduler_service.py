@@ -56,6 +56,8 @@ def reserve_next_task(
             states = {
                 candidate_agent: state_repo.get_or_create(candidate_agent)
                 for candidate_agent in AgentName
+                if candidate_agent is agent
+                or config.agents[candidate_agent.value].enabled
             }
             available_agents = scheduler.available_agents(
                 states,
@@ -111,6 +113,8 @@ def reserve_specific_task(
         states = {
             candidate_agent: state_repo.get_or_create(candidate_agent)
             for candidate_agent in AgentName
+            if candidate_agent is agent
+            or config.agents[candidate_agent.value].enabled
         }
         available_agents = scheduler.available_agents(
             states,
@@ -332,13 +336,26 @@ class SchedulerService:
         available_agents: set[AgentName],
     ) -> bool:
         fallback_agent = task.fallback_agent
-        return bool(
-            self._config.scheduler.fallback_enabled
-            and task.agent_policy is AgentPolicy.ANY
-            and fallback_agent is not None
-            and fallback_agent is not agent
-            and fallback_agent in available_agents
+        if (
+            not self._config.scheduler.fallback_enabled
+            or task.agent_policy is not AgentPolicy.ANY
+            or fallback_agent is None
+        ):
+            return False
+        fallback_runs = [
+            run for run in task.runs if run.fallback_to_agent is not None
+        ]
+        failed_agent = (
+            max(fallback_runs, key=lambda run: run.id or 0).agent
+            if fallback_runs
+            else None
         )
+        alternatives = available_agents - ({failed_agent} if failed_agent else set())
+        if not alternatives:
+            return False
+        if agent is failed_agent:
+            return True
+        return fallback_agent in alternatives and agent is not fallback_agent
 
     def _rank_key(
         self,

@@ -76,6 +76,31 @@ def test_tick_leaves_confirmation_task_reserved_until_rejected(runtime_app) -> N
         runtime.shutdown()
 
 
+def test_tick_excludes_uninstalled_gemini(runtime_app) -> None:
+    factory, config, project = runtime_app
+    config.agents["gemini"].enabled = True
+    tasks = TaskService(factory, config)
+    AgentService(factory).set_availability(
+        AgentName.GEMINI, AgentStatus.AVAILABLE, None
+    )
+    task = tasks.create(task_draft(project, agent_policy=AgentPolicy.GEMINI))
+    runtime = make_runtime(
+        factory,
+        config,
+        {
+            AgentName.GEMINI: FakeAdapter(
+                name=AgentName.GEMINI,
+                installed=False,
+            )
+        },
+    )
+    try:
+        assert runtime.tick_once() == ()
+        assert tasks.get(task.id).status is TaskStatus.WAITING
+    finally:
+        runtime.shutdown()
+
+
 def test_headless_runtime_only_reserves_auto_approval_tasks(runtime_app) -> None:
     factory, config, project = runtime_app
     config.app.global_auto_run = True

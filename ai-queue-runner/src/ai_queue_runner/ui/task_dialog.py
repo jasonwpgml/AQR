@@ -134,6 +134,7 @@ class TaskDialog(QDialog):
             ("Any", AgentPolicy.ANY),
             ("Claude", AgentPolicy.CLAUDE),
             ("Codex", AgentPolicy.CODEX),
+            ("Gemini", AgentPolicy.GEMINI),
         ):
             self.agent_combo.addItem(label, policy)
 

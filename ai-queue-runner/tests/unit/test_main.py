@@ -1033,6 +1033,11 @@ def test_cli_set_agent_and_queue_status_report_automation_state(tmp_path, capsys
     assert agent_payload["status"] == "cooldown"
     assert agent_payload["available_at"].endswith("Z")
 
+    assert main(
+        cli_args(config_path, "set-agent", "gemini", "disabled", "--json")
+    ) == 0
+    assert json.loads(capsys.readouterr().out)["agent"] == "gemini"
+
     assert main(cli_args(config_path, "queue-status", "--json")) == 0
     status_payload = json.loads(capsys.readouterr().out)
     assert status_payload["global_auto_run"] is False
@@ -1042,6 +1047,7 @@ def test_cli_set_agent_and_queue_status_report_automation_state(tmp_path, capsys
     agents = {record["agent"]: record for record in status_payload["agents"]}
     assert agents["claude"]["status"] == "cooldown"
     assert agents["codex"]["status"] == "unknown"
+    assert agents["gemini"]["status"] == "disabled"
 
     force_status(config_path, task_id, TaskStatus.RESERVED)
     assert main(cli_args(config_path, "queue-status")) == 0
@@ -1104,11 +1110,12 @@ def test_cli_daily_summary_json_has_stable_machine_readable_structure(tmp_path, 
         "blocked": 0,
         "cancelled": 0,
     }
-    assert project["agent_run_counts"] == {"claude": 0, "codex": 1}
+    assert project["agent_run_counts"] == {"claude": 0, "codex": 1, "gemini": 0}
     assert project["total_runtime_seconds"] == 300
     assert payload["totals"]["usage_limit_wait_occurred"] == {
         "claude": False,
         "codex": False,
+        "gemini": False,
     }
 
     assert main(

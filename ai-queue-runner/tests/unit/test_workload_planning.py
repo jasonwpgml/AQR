@@ -99,6 +99,25 @@ def test_plan_workload_rejects_dedicated_task_over_its_agent_budget(
         plan_workload(batch)
 
 
+def test_plan_workload_accepts_optional_gemini_budget_and_legacy_input(tmp_path: Path):
+    legacy = WorkloadBatch.model_validate(
+        {
+            "budgets": {"claude": 100, "codex": 100},
+            "tasks": [planned_task(tmp_path, "legacy", 50).model_dump()],
+        }
+    )
+    assert legacy.budgets.gemini == 0
+    assert AgentName.GEMINI not in plan_workload(legacy).assigned_tokens
+
+    three_agent = WorkloadBatch(
+        budgets=TokenBudgets(claude=100, codex=100, gemini=100),
+        tasks=[planned_task(tmp_path, "gemini-only", 75, AgentPolicy.GEMINI)],
+    )
+    plan = plan_workload(three_agent)
+    assert plan.assignments[0].assigned_agent is AgentName.GEMINI
+    assert plan.assigned_tokens[AgentName.GEMINI] == 75
+
+
 @pytest.mark.parametrize(
     ("dependencies", "message"),
     [

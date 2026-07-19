@@ -88,7 +88,7 @@ class TestTaskCrud:
 
     def test_invalid_agent_policy_rejected(self):
         with pytest.raises(ValueError):
-            make_task(agent_policy="gemini")
+            make_task(agent_policy="unsupported")
 
     @pytest.mark.parametrize("priority", [-1, 101])
     def test_priority_out_of_range_rejected(self, priority):
@@ -532,6 +532,32 @@ class TestPersistence:
             column["name"] for column in inspect(final_engine).get_columns("tasks")
         }
         final_engine.dispose()
+
+    def test_schema_v11_agent_constraints_expand_to_gemini_retry_safely(self, tmp_path):
+        db_path = tmp_path / "v11.db"
+        engine = create_db_engine(db_path)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE tasks (id INTEGER PRIMARY KEY, agent_policy TEXT NOT NULL "
+                "CHECK (agent_policy IN ('claude', 'codex', 'any')))"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value_json JSON NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO settings (key, value_json) VALUES ('schema_version', '11')"
+            )
+
+        init_db(engine)
+        init_db(engine)
+
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO tasks (id, agent_policy) VALUES (1, 'gemini')"
+            )
+        with make_session_factory(engine)() as session:
+            assert SettingsRepository(session).get("schema_version") == SCHEMA_VERSION
+        engine.dispose()
 
 
 class TestDependencies:

@@ -475,9 +475,11 @@ class FakeTaskService:
             total_runtime_seconds=0,
             claude_run_count=0,
             codex_run_count=0,
+            gemini_run_count=0,
             fallback_count=0,
             claude_usage_limit_wait_occurred=False,
             codex_usage_limit_wait_occurred=False,
+            gemini_usage_limit_wait_occurred=False,
         )
         return SimpleNamespace(local_date=selected_date, totals=totals, projects=())
 
@@ -689,6 +691,7 @@ def test_main_window_constructs_and_refreshes_from_services(app):
     app.processEvents()
 
     assert window.task_model.rowCount() == 1
+    assert set(window.agent_widgets) == set(AgentName)
     assert window.agent_widgets[AgentName.CLAUDE].status_label.text() == "사용 가능"
     assert window.refresh_timer.interval() == 10_000
     window.task_table.selectRow(0)

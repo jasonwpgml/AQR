@@ -271,6 +271,7 @@ class ProjectDailySummaryView:
     total_runtime_seconds: float
     claude_run_count: int
     codex_run_count: int
+    gemini_run_count: int
     fallback_count: int
     worktree_branches: tuple[str, ...]
     failed_tasks: tuple[FailedTaskDailySummaryView, ...]
@@ -286,11 +287,13 @@ class DailySummaryTotalsView:
     total_runtime_seconds: float
     claude_run_count: int
     codex_run_count: int
+    gemini_run_count: int
     fallback_count: int
     worktree_branches: tuple[str, ...]
     failed_task_count: int
     claude_usage_limit_wait_occurred: bool
     codex_usage_limit_wait_occurred: bool
+    gemini_usage_limit_wait_occurred: bool
 
 
 @dataclass(frozen=True)
@@ -569,6 +572,9 @@ class TaskService:
                     project.claude_run_count for project in project_views
                 ),
                 codex_run_count=sum(project.codex_run_count for project in project_views),
+                gemini_run_count=sum(
+                    project.gemini_run_count for project in project_views
+                ),
                 fallback_count=sum(project.fallback_count for project in project_views),
                 worktree_branches=all_branches,
                 failed_task_count=sum(
@@ -576,6 +582,7 @@ class TaskService:
                 ),
                 claude_usage_limit_wait_occurred=usage_limit_wait[AgentName.CLAUDE],
                 codex_usage_limit_wait_occurred=usage_limit_wait[AgentName.CODEX],
+                gemini_usage_limit_wait_occurred=usage_limit_wait[AgentName.GEMINI],
             )
             return DailySummaryView(
                 local_date=selected_date,
@@ -1221,6 +1228,7 @@ def _to_project_daily_summary(
         total_runtime_seconds=value.total_runtime_seconds,
         claude_run_count=value.agent_run_counts[AgentName.CLAUDE],
         codex_run_count=value.agent_run_counts[AgentName.CODEX],
+        gemini_run_count=value.agent_run_counts[AgentName.GEMINI],
         fallback_count=value.fallback_count,
         worktree_branches=tuple(sorted(value.worktree_branches)),
         failed_tasks=tuple(sorted(value.failed_tasks, key=lambda task: task.id)),

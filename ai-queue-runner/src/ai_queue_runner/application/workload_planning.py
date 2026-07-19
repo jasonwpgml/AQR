@@ -19,6 +19,7 @@ class TokenBudgets(BaseModel):
 
     claude: int = Field(gt=0)
     codex: int = Field(gt=0)
+    gemini: int = Field(default=0, ge=0)
 
     def for_agent(self, agent: AgentName) -> int:
         return int(getattr(self, agent.value))
@@ -56,13 +57,17 @@ class WorkloadPlan:
     assignments: tuple[WorkloadAssignment, ...]
     claude_tokens: int
     codex_tokens: int
+    gemini_tokens: int
 
     @property
     def assigned_tokens(self) -> dict[AgentName, int]:
-        return {
+        assigned = {
             AgentName.CLAUDE: self.claude_tokens,
             AgentName.CODEX: self.codex_tokens,
         }
+        if self.budgets.gemini > 0:
+            assigned[AgentName.GEMINI] = self.gemini_tokens
+        return assigned
 
     @property
     def remaining_tokens(self) -> dict[AgentName, int]:
@@ -74,7 +79,9 @@ class WorkloadPlan:
 
 def plan_workload(batch: WorkloadBatch) -> WorkloadPlan:
     """Resolve every ``any`` policy without exceeding either token budget."""
-    agents = tuple(AgentName)
+    agents = tuple(
+        agent for agent in AgentName if batch.budgets.for_agent(agent) > 0
+    )
     used = {agent: 0 for agent in agents}
     resolved: list[AgentName | None] = [None] * len(batch.tasks)
 
@@ -82,6 +89,8 @@ def plan_workload(batch: WorkloadBatch) -> WorkloadPlan:
         if draft.agent_policy is AgentPolicy.ANY:
             continue
         agent = AgentName(draft.agent_policy.value)
+        if batch.budgets.for_agent(agent) == 0:
+            raise ValueError(f"task '{draft.title}' has no {agent.value} token budget")
         projected = used[agent] + draft.estimated_tokens
         if projected > batch.budgets.for_agent(agent):
             raise ValueError(
@@ -136,4 +145,5 @@ def plan_workload(batch: WorkloadBatch) -> WorkloadPlan:
         assignments=assignments,
         claude_tokens=used[AgentName.CLAUDE],
         codex_tokens=used[AgentName.CODEX],
+        gemini_tokens=used.get(AgentName.GEMINI, 0),
     )

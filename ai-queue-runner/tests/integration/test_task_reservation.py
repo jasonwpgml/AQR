@@ -90,6 +90,24 @@ def test_no_candidate_returns_none(factory, config):
         assert reserve_next_task(session, config, AgentName.CODEX) is None
 
 
+def test_gemini_reserves_dedicated_and_any_tasks(factory, config):
+    config.agents["gemini"].enabled = True
+    with factory() as session:
+        set_available(session, AgentName.GEMINI)
+        repo = TaskRepository(session)
+        dedicated = repo.add(
+            make_task(title="gemini only", agent_policy="gemini", project_path="C:/gemini")
+        )
+        any_task = repo.add(make_task(title="any", project_path="C:/any"))
+        session.commit()
+
+        assert reserve_next_task(session, config, AgentName.GEMINI).id == dedicated.id
+        state = AgentStateRepository(session).get(AgentName.GEMINI)
+        state.current_task_id = None
+        session.commit()
+        assert reserve_next_task(session, config, AgentName.GEMINI).id == any_task.id
+
+
 def test_agent_cannot_hold_two_reservations(factory, config):
     with factory() as session:
         set_available(session, AgentName.CLAUDE)

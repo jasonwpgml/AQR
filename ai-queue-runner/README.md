@@ -1,6 +1,6 @@
 # AI Queue Runner
 
-Claude Code와 Codex CLI에 맡길 작업을 미리 등록하고, 에이전트 상태·우선순위·선행 작업·대기 시간에 따라 안전하게 실행하는 Windows용 로컬 데스크톱 앱입니다.
+Claude Code, Codex CLI, Gemini CLI에 맡길 작업을 미리 등록하고, 에이전트 상태·우선순위·선행 작업·대기 시간에 따라 안전하게 실행하는 Windows용 로컬 데스크톱 앱입니다.
 
 작업과 실행 이력은 SQLite에 유지되며, 동일 작업의 중복 배정과 동일 프로젝트의 동시 실행을 DB 예약 단계에서 막습니다. 각 작업에는 생성 AI와 세션이 기록되고 관리 이력은 작업을 영구 삭제해도 남습니다. 명시적으로 opt-in하면 잠금 충돌 작업만 전용 Git worktree에서 병렬 실행할 수 있습니다. 전체 요구사항은 [`../AI_QUEUE_RUNNER_PLAN.md`](../AI_QUEUE_RUNNER_PLAN.md), 구현 구조는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), UI 기준은 [`DESIGN.md`](DESIGN.md)에 있습니다.
 
@@ -10,10 +10,10 @@ Claude Code와 Codex CLI에 맡길 작업을 미리 등록하고, 에이전트 �
 - [x] Phase 1: 도메인 상태 전이, SQLite/SQLAlchemy 영속화
 - [x] Phase 2: 후보 필터링, 점수 계산, 원자적 예약, 프로젝트 잠금
 - [x] Phase 3: 비동기 프로세스 실행, 취소·타임아웃·재시도·크래시 복구
-- [x] Phase 4: Claude Code/Codex CLI 어댑터와 오류 분류
+- [x] Phase 4: Claude Code/Codex/Gemini CLI 어댑터와 오류 분류
 - [x] Phase 5: PySide6 작업 관리 UI, 승인, 로그, 트레이, 알림
 - [x] Phase 6: 경로 정책, 백업·설정 내보내기·시작 프로그램, PyInstaller 빌드, 소크 테스트
-- [x] Phase 7: 예상 토큰 기반 Claude/Codex 작업량 분배와 원자적 배치 등록
+- [x] Phase 7: 예상 토큰 기반 다중 에이전트 작업량 분배와 원자적 배치 등록
 
 ## 빠른 시작
 
@@ -30,7 +30,7 @@ GUI 없이 자동 승인 작업을 계속 실행하려면 별도 터미널에서
 GUI를 닫아도 워커가 실행 중인 작업은 중단되지 않습니다. 확인 승인 작업은 워커가
 선점하지 않으므로 GUI에서 직접 실행·승인할 수 있습니다.
 
-Python 3.12 이상 3.15 미만과 설치된 `claude`, `codex` CLI가 필요합니다.
+Python 3.12 이상 3.15 미만과 사용할 에이전트의 CLI가 필요합니다. `claude`와 `codex`는 기본 활성화되고, 실측 전인 `gemini`는 `[agents.gemini] enabled = false`로 출하됩니다.
 
 ```powershell
 # 저장소 루트의 가상환경 사용
@@ -68,14 +68,14 @@ draft_pr_enabled = true`와 작업별 `--draft-pr`을 켭니다. `gh` 설치·�
 
 ## 사용 흐름
 
-1. Claude/Codex 상태 패널에서 사용 가능 여부나 재사용 가능 시각을 설정합니다.
+1. Claude/Codex/Gemini 상태 패널에서 사용 가능 여부나 재사용 가능 시각을 설정합니다.
 2. 작업 추가 창에서 절대 프로젝트 경로, 프롬프트, 담당 에이전트, 우선순위, 승인 방식, 재시도와 선행 작업을 입력합니다.
 3. 스케줄러를 시작합니다. 에이전트별로 한 작업만 원자적으로 예약합니다.
 4. 자동 실행이 꺼져 있거나 확인이 필요한 작업은 경로·에이전트·명령·프롬프트를 보고 승인합니다. 거부한 작업은 차단 상태로 남아 다시 묻지 않으며, 재시도 버튼으로 대기열에 되돌릴 수 있습니다. auto 모드 작업을 "즉시 실행"하면 승인 창 없이 바로 실행됩니다.
 5. 작업을 선택해 즉시 실행, 맨 위로 이동, 복제, 취소, 재시도, 완료 보관, 로그/프로젝트 폴더 열기를 사용할 수 있습니다.
 6. 하단 상세/로그에서 실행 결과를 확인합니다. 화면은 최근 2MB를 표시하고 전체 로그는 파일에 보존합니다.
 
-프롬프트는 명령행 인자가 아니라 표준 입력으로 전달됩니다. Claude는 `permission-mode auto`, Codex는 `workspace-write` 샌드박스와 승인 비활성 모드에서 실행하며 위험한 우회 플래그는 사용하지 않습니다.
+프롬프트는 명령행 인자가 아니라 표준 입력으로 전달됩니다. Claude는 `permission-mode auto`, Codex는 `workspace-write` 샌드박스와 승인 비활성 모드, Gemini는 JSON 비대화 모드와 샌드박스 안의 `approval-mode yolo`로 실행합니다.
 
 ## AI/CLI 연동
 
@@ -133,14 +133,14 @@ GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전�
 
 ### 토큰 작업량 배치 계획
 
-`plan-batch`는 JSON에 적힌 Claude/Codex 토큰 예산과 작업별 `estimated_tokens`를
+`plan-batch`는 JSON에 적힌 에이전트별 토큰 예산과 작업별 `estimated_tokens`를
 사용해 `any` 작업을 결정적으로 분배합니다. 전용 작업을 먼저 반영한 뒤 큰 `any`
 작업부터 예상 사용률이 낮은 에이전트에 배치하며, 동률이면 Claude를 선택합니다.
 하나라도 예산·경로·의존성 검증에 실패하면 작업을 전혀 등록하지 않습니다.
 
 ```json
 {
-  "budgets": {"claude": 100000, "codex": 80000},
+  "budgets": {"claude": 100000, "codex": 80000, "gemini": 0},
   "tasks": [
     {
       "title": "아키텍처 검토",

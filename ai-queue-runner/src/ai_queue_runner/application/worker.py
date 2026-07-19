@@ -7,7 +7,7 @@ import threading
 
 from ai_queue_runner.application.runtime import QueueRuntime
 from ai_queue_runner.config.defaults import AppConfig
-from ai_queue_runner.infrastructure.adapters import ClaudeAdapter, CodexAdapter
+from ai_queue_runner.infrastructure.adapters import ClaudeAdapter, CodexAdapter, GeminiAdapter
 from ai_queue_runner.infrastructure.database import (
     create_db_engine,
     init_db,
@@ -24,6 +24,7 @@ def run_worker(config: AppConfig, *, stop_event: threading.Event | None = None) 
     adapters = {
         'claude': ClaudeAdapter(config.agents['claude']),
         'codex': CodexAdapter(config.agents['codex']),
+        'gemini': GeminiAdapter(config.agents['gemini']),
     }
     runtime = QueueRuntime(
         session_factory,

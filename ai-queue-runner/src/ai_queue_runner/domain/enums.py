@@ -12,13 +12,15 @@ from enum import StrEnum
 class AgentName(StrEnum):
     CLAUDE = "claude"
     CODEX = "codex"
+    GEMINI = "gemini"
 
 
 class AgentPolicy(StrEnum):
-    """Which agent a task may run on. ANY means either agent can take it."""
+    """Which agent a task may run on. ANY means any enabled agent can take it."""
 
     CLAUDE = "claude"
     CODEX = "codex"
+    GEMINI = "gemini"
     ANY = "any"
 
 

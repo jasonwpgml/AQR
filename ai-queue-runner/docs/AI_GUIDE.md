@@ -31,7 +31,7 @@
    - confirm 작업은 worker가 선점하지 않으며 GUI에서 직접 실행·승인한다.
    - worker 실행 중 GUI를 열면 같은 DB와 로그를 5초마다 읽는 관찰 모드가 된다.
 4. 실행할 에이전트 상태가 `available` → **새 DB는 `unknown`으로 시작하므로 최초 1회
-   `set-agent codex available`(또는 claude)을 실행할 것.** `unknown`/`limited` 에이전트에는
+   `set-agent codex available`(또는 claude/gemini)을 실행할 것.** `unknown`/`limited` 에이전트에는
    작업이 예약되지 않는다. 현재 상태는 `queue-status`로 확인.
 
 `--approval confirm` 작업은 GUI 승인 창에서 사용자가 허용해야 실행된다.
@@ -57,7 +57,7 @@ GUI를 닫아도 외부 워커의 실행은 계속됩니다. global_auto_run이 
 
 | 명령 | 용도 | 주요 옵션/인자 |
 |---|---|---|
-| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--auto-commit`, `--draft-pr`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
+| `add-task` | 작업 등록 | `--title --prompt --project` 필수, `--agent {claude,codex,gemini,any}`, `--priority 0-100`, `--estimated-tokens`, `--approval {auto,confirm}`, `--auto-commit`, `--draft-pr`, `--not-before`, `--max-retries`, `--repeat {daily,weekly,N}`, `--tag`, `--depends-on` |
 | `save-template NAME` | 단일 작업 초안 저장/덮어쓰기 | `--title --prompt` 필수, 나머지는 `add-task`와 같은 기본 필드. `--project`는 나중에 지정 가능 |
 | `list-templates` / `show-template NAME` | 템플릿 목록/상세 조회 | 이름순 목록, 저장된 TaskDraft 기본값 확인 |
 | `add-from-template NAME` | 변수 치환 후 작업 등록 | `--var key=value` 반복, TaskDraft 오버라이드, `--dry-run` |
@@ -80,7 +80,7 @@ GUI를 닫아도 외부 워커의 실행은 계속됩니다. global_auto_run이 
 | `archive-task ID` | 성공(succeeded) 작업 보관 | |
 | `delete-task ID` | 작업+실행 기록 영구 삭제 | reserved/running은 불가, 의존 작업 있으면 불가 |
 | `delete-tasks` | 프로젝트 범위 영구 삭제 | `--project PATH` 필수, `--created-by`, `--creator-session`, `--status` 반복 가능; 건너뛴 사유 반환 |
-| `set-agent AGENT STATE` | 에이전트 수동 상태 설정 | `claude|codex` × `available|cooldown|disabled`, cooldown은 `--until "YYYY-MM-DD HH:MM"` |
+| `set-agent AGENT STATE` | 에이전트 수동 상태 설정 | `claude|codex|gemini` × `available|cooldown|disabled`, cooldown은 `--until "YYYY-MM-DD HH:MM"` |
 
 ## 작업 출처와 프로젝트 범위 관리
 
@@ -228,7 +228,7 @@ JSON 스키마는 다음 구조로 고정됩니다. `task_counts`와 `agent_run_
         "cancelled": 0
       },
       "total_runtime_seconds": 5400.0,
-      "agent_run_counts": {"claude": 1, "codex": 2},
+      "agent_run_counts": {"claude": 1, "codex": 2, "gemini": 0},
       "fallback_count": 1,
       "worktree_branches": ["aqr/T42"],
       "failed_tasks": [
@@ -245,11 +245,11 @@ JSON 스키마는 다음 구조로 고정됩니다. `task_counts`와 `agent_run_
       "cancelled": 0
     },
     "total_runtime_seconds": 5400.0,
-    "agent_run_counts": {"claude": 1, "codex": 2},
+    "agent_run_counts": {"claude": 1, "codex": 2, "gemini": 0},
     "fallback_count": 1,
     "worktree_branches": ["aqr/T42"],
     "failed_task_count": 1,
-    "usage_limit_wait_occurred": {"claude": false, "codex": true}
+    "usage_limit_wait_occurred": {"claude": false, "codex": true, "gemini": false}
   }
 }
 ```
@@ -266,7 +266,7 @@ false로 채워집니다. 현재 스키마에는 상태 전이 이력 테이블�
 
 ```json
 {
-  "budgets": {"claude": 120000, "codex": 80000},
+  "budgets": {"claude": 120000, "codex": 80000, "gemini": 0},
   "tasks": [
     {
       "title": "설계 검토",
@@ -292,7 +292,8 @@ false로 채워집니다. 현재 스키마에는 상태 전이 이력 테이블�
 - 전용 작업은 지정된 에이전트 예산에서 먼저 차감한다.
 - `any` 작업은 예상 토큰 내림차순으로 처리하고, 등록 후 예산 사용률이 낮은 쪽에 배치한다.
 - 같은 사용률이면 Claude, 같은 크기면 JSON에서 먼저 나온 작업이 우선한다.
-- 결과 작업은 `any`가 아니라 결정된 `claude`/`codex` 정책으로 저장된다.
+- `gemini` 예산은 선택적이며 생략하면 0이다. 양수이면 Gemini 전용 작업과 `any` 분배 후보에 사용된다.
+- 결과 작업은 `any`가 아니라 결정된 `claude`/`codex`/`gemini` 정책으로 저장된다.
 - `--dry-run`은 DB를 변경하지 않는다. 실제 등록은 전체 배치를 한 번만 커밋한다.
 - `dependency_ids`는 등록 전에 이미 DB에 존재하는 작업 ID 배열이다.
 - `depends_on_indices`는 같은 JSON의 `tasks` 배열을 가리키는 선택적 0-기반 인덱스 배열이다.
@@ -488,14 +489,14 @@ failed|blocked → waiting (retry-task)   waiting|retry_wait|blocked → cancell
 ## Any 작업 자동 fallback
 
 `[scheduler] fallback_enabled = true`(기본값)이면 `any` 작업은 한 AI에서 재시도 가능한
-일반 실패가 `fallback_failure_threshold`회 연속 발생한 뒤 반대 AI를 우선합니다. 기본
-임계값은 1회입니다. 전용 `claude`/`codex` 작업에는 적용되지 않습니다.
+일반 실패가 `fallback_failure_threshold`회 연속 발생한 뒤 다른 가용 AI를 우선합니다. 기본
+임계값은 1회입니다. 전용 `claude`/`codex`/`gemini` 작업에는 적용되지 않습니다.
 
-- 사용량 제한은 임계값과 관계없이 즉시 반대 AI를 우선하며 `retry_count`를 소모하지 않습니다.
-- 반대 AI가 사용 가능하면 이전 AI는 그 작업을 후보로 선택하지 않습니다.
-- 반대 AI가 쿨다운·비활성·미설치이면 사용 가능한 기존 AI가 다시 실행할 수 있어 큐가 고정되지 않습니다.
+- 사용량 제한은 임계값과 관계없이 즉시 다른 가용 AI를 우선하며 `retry_count`를 소모하지 않습니다.
+- 최초 선호 대체 AI가 불가능하면 최근 실패 AI가 아닌 다른 가용 AI를 선택합니다.
+- 다른 가용 AI가 없으면 기존 AI가 다시 실행할 수 있어 큐가 고정되지 않습니다.
 - 같은 DB 상태에서는 항상 같은 후보 필터와 기존 점수/동점 규칙을 사용합니다.
-- `show-task ID --json`의 `fallback_agent`는 현재 우선 AI이고,
+- `show-task ID --json`의 `fallback_agent`는 최초 선호 대체 AI이고,
   `recent_runs[].agent -> fallback_to_agent`는 최근 전환 이력입니다.
 - 기존 동작으로 되돌리려면 `fallback_enabled = false`로 설정합니다.
 
