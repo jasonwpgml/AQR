@@ -690,12 +690,14 @@ def test_main_window_constructs_and_refreshes_from_services(app):
 
     assert window.task_model.rowCount() == 1
     assert window.agent_widgets[AgentName.CLAUDE].status_label.text() == "사용 가능"
+    assert window.refresh_timer.interval() == 10_000
     window.task_table.selectRow(0)
     app.processEvents()
     assert "테스트 작성" in window.details_view.toPlainText()
     assert window.edit_button.isEnabled()
     window.start_scheduler()
     assert window.pause_button.isEnabled()
+    assert window.refresh_timer.interval() == 1_000
 
     window.close()
 
@@ -877,6 +879,7 @@ def test_exit_without_running_tasks_quits_without_dialog(app, monkeypatch):
 def test_exit_with_running_task_confirms_cancels_and_quits(app, monkeypatch):
     task = make_task(status=TaskStatus.RUNNING)
     runtime = FakeRuntime()
+    runtime.is_active = lambda task_id=None: task_id == task.id
     window = MainWindow(
         FakeTaskService([task]),
         FakeAgentService(),
@@ -925,8 +928,13 @@ def test_enabled_agent_with_missing_cli_shows_warning(app):
     window.close()
 
 
-@pytest.mark.parametrize("approval_mode", [ApprovalMode.CONFIRM, ApprovalMode.AUTO])
-def test_main_window_polls_each_pending_reservation_once(app, approval_mode):
+@pytest.mark.parametrize(
+    ("approval_mode", "expected_prompt"),
+    [(ApprovalMode.CONFIRM, True), (ApprovalMode.AUTO, False)],
+)
+def test_main_window_polls_each_pending_reservation_once(
+    app, approval_mode, expected_prompt
+):
     task = make_task(
         status=TaskStatus.RESERVED,
         approval_mode=approval_mode,
@@ -948,7 +956,30 @@ def test_main_window_polls_each_pending_reservation_once(app, approval_mode):
     window._poll_runtime()
     window._poll_runtime()
 
-    assert prompted == [task.id]
+    assert prompted == ([task.id] if expected_prompt else [])
+    window.close()
+
+
+def test_external_worker_is_visible_as_observation_mode(app):
+    runtime = FakeRuntime()
+    runtime.external_owner = SimpleNamespace(mode="worker", pid=4321)
+    window = MainWindow(
+        FakeTaskService([]),
+        FakeAgentService(),
+        runtime,
+        adapters={},
+        config=AppConfig(),
+        active_config_path=Path("config.toml"),
+        create_tray=False,
+    )
+    window.refresh_timer.stop()
+
+    assert window.runtime_status_label.text() == (
+        "헤드리스 워커 실행 중 (PID 4321) · 관찰 모드"
+    )
+    assert not window.start_button.isEnabled()
+    assert not window.pause_button.isEnabled()
+    assert window.refresh_timer.interval() == 5_000
     window.close()
 
 

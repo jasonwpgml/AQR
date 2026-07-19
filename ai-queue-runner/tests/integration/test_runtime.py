@@ -76,6 +76,76 @@ def test_tick_leaves_confirmation_task_reserved_until_rejected(runtime_app) -> N
         runtime.shutdown()
 
 
+def test_headless_runtime_only_reserves_auto_approval_tasks(runtime_app) -> None:
+    factory, config, project = runtime_app
+    config.app.global_auto_run = True
+    tasks = TaskService(factory, config)
+    AgentService(factory).set_availability(
+        AgentName.CLAUDE,
+        AgentStatus.AVAILABLE,
+        None,
+    )
+    confirm = tasks.create(
+        task_draft(
+            project,
+            priority=100,
+            agent_policy=AgentPolicy.CLAUDE,
+            approval_mode=ApprovalMode.CONFIRM,
+        )
+    )
+    auto = tasks.create(
+        task_draft(
+            project,
+            priority=10,
+            agent_policy=AgentPolicy.CLAUDE,
+            approval_mode=ApprovalMode.AUTO,
+        )
+    )
+    adapter = FakeAdapter(command=[sys.executable, "-c", "print('worker')"])
+    runtime = QueueRuntime(
+        factory,
+        config,
+        {AgentName.CLAUDE: adapter},
+        auto_approval_only=True,
+    )
+    try:
+        assert runtime.tick_once() == (auto.id,)
+        wait_until(lambda: tasks.get(auto.id).status is TaskStatus.SUCCEEDED)
+        assert tasks.get(confirm.id).status is TaskStatus.WAITING
+    finally:
+        runtime.shutdown()
+
+
+def test_headless_runtime_does_not_reserve_when_global_auto_run_is_off(
+    runtime_app,
+) -> None:
+    factory, config, project = runtime_app
+    tasks = TaskService(factory, config)
+    AgentService(factory).set_availability(
+        AgentName.CLAUDE,
+        AgentStatus.AVAILABLE,
+        None,
+    )
+    task = tasks.create(
+        task_draft(
+            project,
+            agent_policy=AgentPolicy.CLAUDE,
+            approval_mode=ApprovalMode.AUTO,
+        )
+    )
+    runtime = QueueRuntime(
+        factory,
+        config,
+        {AgentName.CLAUDE: FakeAdapter()},
+        auto_approval_only=True,
+    )
+    try:
+        assert runtime.tick_once() == ()
+        assert tasks.get(task.id).status is TaskStatus.WAITING
+    finally:
+        runtime.shutdown()
+
+
 def test_blocking_reject_parks_task_and_prevents_immediate_rereservation(runtime_app) -> None:
     factory, config, project = runtime_app
     tasks = TaskService(factory, config)

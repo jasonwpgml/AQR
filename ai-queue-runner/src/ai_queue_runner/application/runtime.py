@@ -31,6 +31,7 @@ from ai_queue_runner.domain.models import AgentState
 from ai_queue_runner.infrastructure.adapters.base import AgentAdapter
 from ai_queue_runner.infrastructure.process_runner import ProcessRunner
 from ai_queue_runner.infrastructure.repositories import TaskRepository
+from ai_queue_runner.infrastructure.runtime_owner import RuntimeLease, RuntimeOwner
 
 SessionFactory = Callable[[], Session]
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class QueueRuntime:
         process_runner: ProcessRunner | None = None,
         *,
         scheduler: Any | None = None,
+        lease: RuntimeLease | None = None,
+        auto_approval_only: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._config = config
@@ -56,6 +59,8 @@ class QueueRuntime:
         self._execution_service = ExecutionService(config, process_runner or ProcessRunner())
         self._worktree_service = WorktreeService(session_factory, config)
         self._scheduler = scheduler or BackgroundScheduler()
+        self._lease = lease
+        self._auto_approval_only = auto_approval_only
 
         self._tick_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -77,7 +82,15 @@ class QueueRuntime:
         with self._state_lock:
             return self._started and self._paused
 
+    @property
+    def external_owner(self) -> RuntimeOwner | None:
+        return self._lease.external_owner() if self._lease is not None else None
+
     def start(self) -> None:
+        with self._state_lock:
+            should_acquire = not self._started and self._lease is not None
+        if should_acquire:
+            self._lease.acquire()
         self._ensure_loop()
         run_initial_tick = False
         with self._state_lock:
@@ -91,7 +104,13 @@ class QueueRuntime:
                     max_instances=1,
                     replace_existing=True,
                 )
-                self._scheduler.start()
+                try:
+                    self._scheduler.start()
+                except Exception:
+                    self._stop_loop(wait=True)
+                    if self._lease is not None:
+                        self._lease.release()
+                    raise
                 self._started = True
                 self._paused = False
                 run_initial_tick = True
@@ -116,6 +135,8 @@ class QueueRuntime:
                 self._started = False
                 self._paused = False
         self._stop_loop(wait=wait)
+        if self._lease is not None:
+            self._lease.release()
 
     def tick_once(self) -> tuple[int, ...]:
         """Run one maintenance/reservation pass and return newly reserved task IDs."""
@@ -130,6 +151,8 @@ class QueueRuntime:
                 release_stale_reservations(session, self._config, now)
 
             reserved_ids = []
+            if self._auto_approval_only and not self._config.app.global_auto_run:
+                return ()
             eligible_agents = frozenset(
                 agent
                 for agent in AgentName
@@ -152,6 +175,9 @@ class QueueRuntime:
                             now,
                             eligible_agents=eligible_agents,
                             exclude_task_ids=excluded_task_ids,
+                            approval_modes=(
+                                (ApprovalMode.AUTO,) if self._auto_approval_only else None
+                            ),
                         )
                         if task is None:
                             break

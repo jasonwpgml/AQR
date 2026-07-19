@@ -66,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--no-tray", action="store_true", help=argparse.SUPPRESS)
     subcommands = parser.add_subparsers(dest="command")
+    subcommands.add_parser(
+        "worker",
+        help="run automatic queue work without opening the GUI",
+    )
     add_task = subcommands.add_parser("add-task", help="add a task without starting the GUI")
     add_task.add_argument("--title", required=True, help="task title")
     add_task.add_argument("--prompt", required=True, help="prompt sent to the selected AI")
@@ -452,6 +456,17 @@ def main(argv: list[str] | None = None) -> int:
         print(maintenance_result)
         return 0
 
+    if args.command == "worker":
+        from ai_queue_runner.application.worker import run_worker
+        from ai_queue_runner.infrastructure.runtime_owner import RuntimeLeaseError
+
+        setup_logging(config.app.logs_dir, config.app.log_level)
+        try:
+            return run_worker(config)
+        except RuntimeLeaseError as exc:
+            print(f"worker error: {exc}", file=sys.stderr)
+            return 2
+
     if args.command is not None:
         from ai_queue_runner.application.cli_service import CliUsageError, run_cli_command
 
@@ -578,6 +593,7 @@ def run_desktop_app(
         init_db,
         make_session_factory,
     )
+    from ai_queue_runner.infrastructure.runtime_owner import RuntimeLease, runtime_lease_path
     from ai_queue_runner.ui.main_window import MainWindow
 
     if active_config_path is None:
@@ -593,7 +609,12 @@ def run_desktop_app(
     task_service = TaskService(session_factory, config)
     prompt_template_service = PromptTemplateService(session_factory)
     agent_service = AgentService(session_factory)
-    runtime = QueueRuntime(session_factory, config, adapters)
+    runtime = QueueRuntime(
+        session_factory,
+        config,
+        adapters,
+        lease=RuntimeLease(runtime_lease_path(config.app.db_path), mode="gui"),
+    )
 
     app = QApplication.instance() or QApplication([sys.argv[0]])
     app.setApplicationName("AI Queue Runner")

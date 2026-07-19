@@ -17,6 +17,19 @@ Claude Code와 Codex CLI에 맡길 작업을 미리 등록하고, 에이전트 �
 
 ## 빠른 시작
 
+GUI 없이 자동 승인 작업을 계속 실행하려면 별도 터미널에서 워커를 실행합니다.
+
+~~~powershell
+..\.venv\Scripts\python -m ai_queue_runner --config config.toml worker
+~~~
+
+워커가 실행 중이어도 GUI는 언제든 열 수 있습니다. GUI는 같은 SQLite DB와 로그를
+5초마다 갱신해 작업 진행을 보여 주며, 상단에 워커 PID와 관찰 모드를 표시합니다.
+대기·일시정지 중에는 10초, GUI 스케줄러 실행 중에는 1초 간격이며 새로고침 버튼은
+언제든 즉시 최신 상태를 읽습니다.
+GUI를 닫아도 워커가 실행 중인 작업은 중단되지 않습니다. 확인 승인 작업은 워커가
+선점하지 않으므로 GUI에서 직접 실행·승인할 수 있습니다.
+
 Python 3.12 이상 3.15 미만과 설치된 `claude`, `codex` CLI가 필요합니다.
 
 ```powershell
@@ -65,6 +78,10 @@ draft_pr_enabled = true`와 작업별 `--draft-pr`을 켭니다. `gh` 설치·�
 프롬프트는 명령행 인자가 아니라 표준 입력으로 전달됩니다. Claude는 `permission-mode auto`, Codex는 `workspace-write` 샌드박스와 승인 비활성 모드에서 실행하며 위험한 우회 플래그는 사용하지 않습니다.
 
 ## AI/CLI 연동
+
+큐 관리 명령뿐 아니라 worker 명령으로 GUI 없는 실행 엔진도 시작할 수 있습니다.
+프로세스 잠금은 같은 DB에 GUI 스케줄러와 워커가 동시에 붙어 중복 스케줄링하는 것을
+막습니다. 다만 GUI의 조회·작업 등록·로그 확인은 잠금과 무관하게 계속 사용할 수 있습니다.
 
 GUI를 열지 않고도 같은 설정과 `TaskService` 검증을 거쳐 큐 전체를 관리할 수 있습니다. 조회(`list-tasks`, `show-task`, `list-events`, `queue-status`, `daily-summary`, `pending-reviews`)와 작업 제어(`add-task`, `update-task`, `retry-task`, `cancel-task`, `duplicate-task`, `move-top`, `archive-task`, `delete-task`, `delete-tasks`), 반복 작업 정의(`save-template`, `list-templates`, `show-template`, `add-from-template`, `delete-template`), 완료 품질 평가(`review-task`), 원자적 작업 분할(`split-task`), worktree 정리(`cleanup-worktree`), 에이전트 상태(`set-agent`), 토큰 배치 계획(`plan-batch`)까지 지원하며, AI 에이전트용 상세 규약은 [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)에 있습니다. `--config`를 생략하면 GUI와 동일하게 현재 폴더의 `config.toml`, 없으면 `%LOCALAPPDATA%\AIQueueRunner\config.toml`을 사용합니다.
 

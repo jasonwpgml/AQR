@@ -43,6 +43,10 @@ from ai_queue_runner.ui.tray import QueueSystemTray
 class MainWindow(QMainWindow):
     """Coordinate UI actions through application services only."""
 
+    ACTIVE_REFRESH_INTERVAL_MS = 1_000
+    OBSERVER_REFRESH_INTERVAL_MS = 5_000
+    IDLE_REFRESH_INTERVAL_MS = 10_000
+
     def __init__(
         self,
         task_service: object,
@@ -80,6 +84,7 @@ class MainWindow(QMainWindow):
 
         self.start_button = QPushButton("스케줄러 시작")
         self.pause_button = QPushButton("일시정지")
+        self.runtime_status_label = QLabel("GUI 스케줄러 대기")
         self.settings_button = QPushButton("설정")
         self.add_button = QPushButton("작업 추가")
         self.edit_button = QPushButton("수정")
@@ -198,6 +203,7 @@ class MainWindow(QMainWindow):
             self.exit_button,
         ):
             scheduler_controls.addWidget(widget)
+        scheduler_controls.addWidget(self.runtime_status_label)
         scheduler_controls.addStretch(1)
         scheduler_controls.addWidget(QLabel("필터"))
         scheduler_controls.addWidget(self.status_filter)
@@ -239,14 +245,13 @@ class MainWindow(QMainWindow):
             self.tray.quit_requested.connect(self._quit_application)
             self.tray.show()
 
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._poll_runtime)
         self.refresh()
         self._last_task_statuses = {
             int(task.id): enum_value(getattr(task, "status", ""))
             for task in self._list_tasks()
         }
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.setInterval(1000)
-        self.refresh_timer.timeout.connect(self._poll_runtime)
         self.refresh_timer.start()
 
     def _list_tasks(self, status: TaskStatus | str | None = None) -> list[object]:
@@ -294,8 +299,29 @@ class MainWindow(QMainWindow):
         self.calendar_view.refresh()
         running = bool(getattr(self.runtime, "running", False))
         paused = bool(getattr(self.runtime, "paused", not running))
-        self.start_button.setEnabled(not running or paused)
-        self.pause_button.setEnabled(running and not paused)
+        try:
+            external_owner = getattr(self.runtime, "external_owner", None)
+        except OSError:
+            external_owner = None
+        self.start_button.setEnabled(external_owner is None and (not running or paused))
+        self.pause_button.setEnabled(external_owner is None and running and not paused)
+        if external_owner is not None:
+            mode = "헤드리스 워커" if external_owner.mode == "worker" else "다른 GUI"
+            self.runtime_status_label.setText(
+                f"{mode} 실행 중 (PID {external_owner.pid}) · 관찰 모드"
+            )
+            refresh_interval = self.OBSERVER_REFRESH_INTERVAL_MS
+        elif running and not paused:
+            self.runtime_status_label.setText("GUI 스케줄러 실행 중")
+            refresh_interval = self.ACTIVE_REFRESH_INTERVAL_MS
+        elif paused:
+            self.runtime_status_label.setText("GUI 스케줄러 일시정지")
+            refresh_interval = self.IDLE_REFRESH_INTERVAL_MS
+        else:
+            self.runtime_status_label.setText("GUI 스케줄러 대기")
+            refresh_interval = self.IDLE_REFRESH_INTERVAL_MS
+        if self.refresh_timer.interval() != refresh_interval:
+            self.refresh_timer.setInterval(refresh_interval)
         if self.tray is not None:
             self.tray.set_running(running and not paused)
             waiting = next(
@@ -517,6 +543,8 @@ class MainWindow(QMainWindow):
             int(task.id): task
             for task in tasks
             if enum_value(getattr(task, "status", "")) == TaskStatus.RESERVED.value
+            and enum_value(getattr(task, "approval_mode", ""))
+            == ApprovalMode.CONFIRM.value
         }
         self._prompted_reservations.intersection_update(reserved)
         for task_id in reserved:
@@ -917,10 +945,10 @@ class MainWindow(QMainWindow):
         active_tasks = []
         for task in self._list_tasks():
             status = enum_value(getattr(task, "status", ""))
-            if status == TaskStatus.RUNNING.value:
-                active_tasks.append(task)
-                continue
-            if status != TaskStatus.RESERVED.value:
+            if status not in {
+                TaskStatus.RESERVED.value,
+                TaskStatus.RUNNING.value,
+            }:
                 continue
             try:
                 active = bool(self.runtime.is_active(task.id))
