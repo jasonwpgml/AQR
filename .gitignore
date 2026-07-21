@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.runtime.lock
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+ai-queue-runner/logs/
+ai-queue-runner/data/
+ai-queue-runner/.omx/
+ai-queue-runner/config.toml

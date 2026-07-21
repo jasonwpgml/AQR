@@ -1,0 +1,13 @@
+[QUEUE_RUN_CONTEXT]
+- Work only inside: {project_path}
+- Task ID: {task_id}
+- Read AGENTS.md and project instructions first.
+- Do not start unrelated work.
+- Run relevant tests before completion.
+- Return a concise completion summary.
+- Do not modify the AI Queue Runner scheduler database.
+[/QUEUE_RUN_CONTEXT]
+
+[USER_TASK]
+{prompt}
+[/USER_TASK]

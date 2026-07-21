@@ -1,0 +1,148 @@
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from ai_queue_runner.application.task_service import TaskDraft
+from ai_queue_runner.application.workload_planning import (
+    TokenBudgets,
+    WorkloadBatch,
+    plan_workload,
+)
+from ai_queue_runner.domain.enums import AgentName, AgentPolicy
+
+
+def planned_task(
+    project: Path,
+    title: str,
+    estimated_tokens: int,
+    agent_policy: AgentPolicy = AgentPolicy.ANY,
+    *,
+    depends_on_indices: list[int] | None = None,
+) -> TaskDraft:
+    return TaskDraft(
+        title=title,
+        prompt=f"Implement {title}",
+        project_path=project,
+        agent_policy=agent_policy,
+        estimated_tokens=estimated_tokens,
+        depends_on_indices=depends_on_indices or [],
+    )
+
+
+def test_plan_workload_balances_any_tasks_deterministically(tmp_path: Path) -> None:
+    batch = WorkloadBatch(
+        budgets=TokenBudgets(claude=1_000, codex=1_000),
+        tasks=[
+            planned_task(tmp_path, "claude-only", 300, AgentPolicy.CLAUDE),
+            planned_task(tmp_path, "codex-only", 100, AgentPolicy.CODEX),
+            planned_task(tmp_path, "large-any", 500),
+            planned_task(tmp_path, "medium-any", 300),
+            planned_task(tmp_path, "small-any", 200),
+        ],
+    )
+
+    first = plan_workload(batch)
+    second = plan_workload(batch)
+
+    assert first == second
+    assert [assignment.assigned_agent for assignment in first.assignments] == [
+        AgentName.CLAUDE,
+        AgentName.CODEX,
+        AgentName.CODEX,
+        AgentName.CLAUDE,
+        AgentName.CLAUDE,
+    ]
+    assert [assignment.draft.agent_policy for assignment in first.assignments] == [
+        AgentPolicy.CLAUDE,
+        AgentPolicy.CODEX,
+        AgentPolicy.CODEX,
+        AgentPolicy.CLAUDE,
+        AgentPolicy.CLAUDE,
+    ]
+    assert first.assigned_tokens == {
+        AgentName.CLAUDE: 800,
+        AgentName.CODEX: 600,
+    }
+    assert first.remaining_tokens == {
+        AgentName.CLAUDE: 200,
+        AgentName.CODEX: 400,
+    }
+
+
+def test_plan_workload_rejects_missing_estimates_and_capacity_overflow(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValidationError, match="estimated_tokens must be positive"):
+        WorkloadBatch(
+            budgets=TokenBudgets(claude=100, codex=100),
+            tasks=[planned_task(tmp_path, "unknown", 0)],
+        )
+
+    batch = WorkloadBatch(
+        budgets=TokenBudgets(claude=100, codex=100),
+        tasks=[planned_task(tmp_path, "too-large", 201)],
+    )
+    with pytest.raises(ValueError, match="does not fit remaining token budgets"):
+        plan_workload(batch)
+
+
+def test_plan_workload_rejects_dedicated_task_over_its_agent_budget(
+    tmp_path: Path,
+) -> None:
+    batch = WorkloadBatch(
+        budgets=TokenBudgets(claude=100, codex=1_000),
+        tasks=[planned_task(tmp_path, "claude-only", 101, AgentPolicy.CLAUDE)],
+    )
+
+    with pytest.raises(ValueError, match="claude-only.*claude token budget"):
+        plan_workload(batch)
+
+
+def test_plan_workload_accepts_optional_gemini_budget_and_legacy_input(tmp_path: Path):
+    legacy = WorkloadBatch.model_validate(
+        {
+            "budgets": {"claude": 100, "codex": 100},
+            "tasks": [planned_task(tmp_path, "legacy", 50).model_dump()],
+        }
+    )
+    assert legacy.budgets.gemini == 0
+    assert AgentName.GEMINI not in plan_workload(legacy).assigned_tokens
+
+    three_agent = WorkloadBatch(
+        budgets=TokenBudgets(claude=100, codex=100, gemini=100),
+        tasks=[planned_task(tmp_path, "gemini-only", 75, AgentPolicy.GEMINI)],
+    )
+    plan = plan_workload(three_agent)
+    assert plan.assignments[0].assigned_agent is AgentName.GEMINI
+    assert plan.assigned_tokens[AgentName.GEMINI] == 75
+
+
+@pytest.mark.parametrize(
+    ("dependencies", "message"),
+    [
+        (([2], []), "out of range"),
+        (([0],), "cannot depend on itself"),
+        (([1], [0]), "cannot contain a cycle"),
+    ],
+)
+def test_workload_batch_rejects_invalid_sibling_dependencies(
+    tmp_path: Path,
+    dependencies: tuple[list[int], ...],
+    message: str,
+) -> None:
+    tasks = [
+        planned_task(
+            tmp_path,
+            f"task-{index}",
+            10,
+            depends_on_indices=dependency_indices,
+        )
+        for index, dependency_indices in enumerate(dependencies)
+    ]
+
+    with pytest.raises(ValidationError, match=message):
+        WorkloadBatch(
+            budgets=TokenBudgets(claude=100, codex=100),
+            tasks=tasks,
+        )
