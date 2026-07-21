@@ -1,6 +1,6 @@
 """Configuration models and default values.
 
-Every tunable named in AI_QUEUE_RUNNER_PLAN.md (scoring bonuses, dedicated-task
+Every tunable named in docs/PLAN.md (scoring bonuses, dedicated-task
 protection, limit-detection patterns) lives here so it can be overridden from
 config.toml instead of being hardcoded.
 """

@@ -5,7 +5,7 @@ Claude acts as orchestrator/reviewer; Codex acts as implementer/tester.
 
 ## Read first, in this order
 
-1. `../AI_QUEUE_RUNNER_PLAN.md` — full requirements and architecture (Korean). It is the source of truth.
+1. `docs/PLAN.md` — full requirements and architecture (Korean). It is the source of truth.
 2. `.agent/STATE.md` — current phase, active task, owner.
 3. `.agent/TASKS.md` — task backlog and status.
 4. `.agent/DECISIONS.md` — settled decisions; do not relitigate them.

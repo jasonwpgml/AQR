@@ -5,7 +5,7 @@
 - Status: Active
 - Last refreshed: 2026-07-16
 - Primary product surfaces: Windows desktop main window, task editor, approval dialog, log/run detail, system tray
-- Evidence reviewed: `../AI_QUEUE_RUNNER_PLAN.md` §§2, 4, 7, 8, 10, 14–16; `README.md`; `docs/ARCHITECTURE.md`; current domain/application services
+- Evidence reviewed: `docs/PLAN.md` §§2, 4, 7, 8, 10, 14–16; `README.md`; `docs/ARCHITECTURE.md`; current domain/application services
 - No screenshots, brand assets, component library, or prior UI implementation were present.
 
 ## Brand

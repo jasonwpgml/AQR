@@ -1,6 +1,6 @@
 # Task backlog
 
-Phases are defined in `../../AI_QUEUE_RUNNER_PLAN.md` §14.
+Phases are defined in `../docs/PLAN.md` §14.
 
 [done] T001 Phase 0: pyproject, package skeleton, config loader, logging, pytest, ruff
 [done] T002 Phase 1: enums, state machine, SQLAlchemy models

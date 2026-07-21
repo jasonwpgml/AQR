@@ -2,7 +2,7 @@
 
 Claude Code, Codex CLI, Gemini CLI에 맡길 작업을 미리 등록하고, 에이전트 상태·우선순위·선행 작업·대기 시간에 따라 안전하게 실행하는 Windows용 로컬 데스크톱 앱입니다.
 
-작업과 실행 이력은 SQLite에 유지되며, 동일 작업의 중복 배정과 동일 프로젝트의 동시 실행을 DB 예약 단계에서 막습니다. 각 작업에는 생성 AI와 세션이 기록되고 관리 이력은 작업을 영구 삭제해도 남습니다. 명시적으로 opt-in하면 잠금 충돌 작업만 전용 Git worktree에서 병렬 실행할 수 있습니다. 전체 요구사항은 [`../AI_QUEUE_RUNNER_PLAN.md`](../AI_QUEUE_RUNNER_PLAN.md), 구현 구조는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), UI 기준은 [`DESIGN.md`](DESIGN.md)에 있습니다.
+작업과 실행 이력은 SQLite에 유지되며, 동일 작업의 중복 배정과 동일 프로젝트의 동시 실행을 DB 예약 단계에서 막습니다. 각 작업에는 생성 AI와 세션이 기록되고 관리 이력은 작업을 영구 삭제해도 남습니다. 명시적으로 opt-in하면 잠금 충돌 작업만 전용 Git worktree에서 병렬 실행할 수 있습니다. 전체 요구사항은 [`docs/PLAN.md`](docs/PLAN.md), 구현 구조는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), UI 기준은 [`DESIGN.md`](DESIGN.md)에 있습니다.
 
 ## 현재 상태
 

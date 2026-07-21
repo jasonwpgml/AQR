@@ -1337,7 +1337,7 @@ MVP는 아래 조건을 모두 만족할 때 완료로 본다.
 ```text
 이 저장소의 총괄 개발 에이전트 역할을 맡아라.
 
-먼저 AI_QUEUE_RUNNER_PLAN.md 전체를 읽고,
+먼저 이 계획 문서(현 ai-queue-runner/docs/PLAN.md) 전체를 읽고,
 프로젝트 루트의 AGENTS.md 및 .agent 상태 파일을 생성하라.
 
 너의 역할:
