@@ -1,0 +1,67 @@
+# Decisions
+
+Settled decisions. Do not reopen without user approval.
+
+D001 PySide6 for the desktop UI (plan §3.2)
+D002 SQLite + SQLAlchemy 2.x for persistence (plan §3.1)
+D003 Project-level exclusive lock only in v1 (plan §5.6)
+D004 Agent availability times are entered manually in v1 (plan §7.1)
+D005 Project lives in ai-queue-runner/ subfolder of the AQR repo (user, 2026-07-16)
+D006 Agent-facing docs (AGENTS.md, .agent/) are written in English (user, 2026-07-16)
+D007 Tooling: hatchling build backend, ruff lint (E/F/I/UP/B), pytest with pythonpath=src
+D008 Config: TOML + Pydantic v2 with extra="forbid"; unknown keys are hard errors
+D009 Relative db_path/logs_dir in config.toml resolve against the config file's directory
+D010 All scoring weights and limit-detection patterns are config values, not constants (plan §5.5, §7.2)
+D011 Packages are created in the phase that needs them; no empty placeholder modules
+D012 Heavy deps (SQLAlchemy, APScheduler, PySide6) are added in their phase, not upfront
+D013 DB datetimes are naive UTC; convert to local time only at the UI boundary (domain/clock.py)
+D014 Enum columns store enum *values* as TEXT (readable in any SQLite browser), non-native with CHECK
+D015 Status changes go through TaskRepository.set_status() only; transitions.py defines legality
+D016 Repositories never commit; the caller owns the transaction (enables single-txn reservation, plan §5.4)
+D017 Human-facing diagrams live in docs/ARCHITECTURE.md (Korean, Mermaid) and must be updated in the same task that changes tables/states/modules
+D018 Reservation uses compare-and-swap UPDATEs (WHERE status='waiting' / current_task_id IS NULL) instead of BEGIN IMMEDIATE; a lost race rolls back and re-selects
+D019 agent_states.current_task_id is claimed at reservation time (not run start), so one agent can never hold two reservations; execution/recovery must clear it
+D020 Adapters only build commands and classify errors; ProcessRunner owns execution (deviation from plan §6.1 run())
+D021 Process liveness uses psutil only; os.kill(pid, 0) is forbidden on Windows because it TerminateProcess-es the target
+D022 Phase 4 CLI compatibility floor is Claude Code 2.1.211 and Codex CLI 0.144.3, verified from installed --help/version output
+D023 Queue CLI runs never use dangerous bypass flags: Claude uses permission-mode auto; Codex uses approval never inside workspace-write sandbox
+D024 Wrapped prompts are sent over stdin, not command arguments, to avoid Windows command-line limits and duplicate prompt storage in task_runs.command
+D025 Claude sessions and Codex rollouts are ephemeral for queue work (`--no-session-persistence`, `--ephemeral`)
+D026 Implicit configuration uses a stable per-user writable directory (`%LOCALAPPDATA%/AIQueueRunner` on Windows); explicit relative DB/log paths remain config-file-relative
+D027 Runtime dependencies target PySide6 6.11.x and APScheduler 3.11.x; Windows builds pin PyInstaller 6.21.0 and use `onedir`
+D028 Empty `allowed_project_roots` blocks all execution; a reserved task with an invalid/out-of-policy path transitions to `blocked`
+D029 Phase 6 maintenance is exposed as one-shot CLI options (`--backup`, `--export-config`, `--startup`) so it also works from the packaged executable
+D030 Windows per-user startup uses the HKCU Run key; development launches use `python -m ai_queue_runner`, while frozen launches call the executable directly
+D031 Process recovery identifies an owned process by both PID and exact OS creation time; unreadable or changed identity is never killed automatically
+D032 Authentication errors block the task and put the agent in `error`; only usage-limit errors return the task to waiting and put the agent in `cooldown`
+D033 Exit-zero CLI output is not matched against generic limit/auth substrings; Claude's structured `rate_limit_event` is authoritative except when its status is `allowed`
+D034 Completed-task archival uses a reserved internal tag because v1's eight-state schema has no archive state; the marker is hidden from user tags and stripped on duplication
+D035 “Move to top” assigns priority 100 and demotes other waiting priority-100 tasks to 99, preserving the configured 0..100 priority model without a schema-only queue-position field
+D036 Exclusive project locking is part of the atomic task-claim UPDATE (`NOT EXISTS` reserved/running same-path row), not only the pre-selection snapshot
+D037 Application services expose one canonical method name per operation; the UI does not carry compatibility aliases or signature-inspection fallbacks
+D038 Token workload plans use explicit per-batch Claude/Codex budgets; dedicated tasks consume their own budget first, then Any tasks use deterministic largest-first projected-utilization balancing with Claude as the final tie-breaker
+D039 `estimated_tokens=0` means unknown for ordinary tasks, but every `plan-batch` task requires a positive estimate; planned Any tasks persist as the selected dedicated policy
+D040 Batch enqueue validates the complete workload then commits all tasks once; `dependency_ids` in a batch may reference existing database tasks, not sibling tasks that do not yet have IDs
+D041 Any-task fallback stores the current preference on `tasks` and the transition target on the failed `task_run`; the scheduler excludes the previous agent only while the preferred installed agent is available, preserving deterministic CAS reservation without permanently pinning work
+D042 Recurrence is a nullable positive day interval (1=daily, 7=weekly); ExecutionService creates the successor in the success transaction, and a unique recurrence_source_task_id makes each completion idempotent
+D043 Worktree parallelism is opt-in; CAS marks only lock-conflicting reservations for deterministic `aqr/T{id}` isolation, and preparation failure releases the reservation to preserve exclusive serial fallback
+D044 Daily summaries convert a local calendar date to a half-open UTC range; terminal task counts use finish time (blocked uses status-update time), while run metrics use run finish time so overnight work belongs to the result date
+D045 T033 supersedes D040's sibling-reference limitation: `dependency_ids` still names existing DB tasks, while `depends_on_indices` names zero-based siblings; the complete sibling DAG is validated before rows are inserted and materialized as ordinary task dependencies after IDs are assigned
+D046 Splitting rewires every direct dependent of the cancelled original to depend on every generated child, so existing downstream work remains blocked until all children succeed; a child dependency that would form a cycle through the original's downstream graph is rejected
+D047 A split first CAS-cancels only a waiting/retry-wait/blocked original, then records `split_parent_task_id`, children, sibling dependencies, and downstream rewiring in the same caller-owned transaction; any failure rolls back the original status too
+D048 Quality reviews are append-only `task_reviews` rows; the highest review ID is the current verdict, preserving every re-review while `review_count`/revision exposes replacement history
+D049 A failed review may atomically create one linked waiting task per invocation through `tasks.rework_of_task_id`; it inherits the original queue policy fields but uses the explicit reopen prompt and does not inherit recurrence
+D050 Task templates are single-task DB drafts: project_path may be deferred until render, title/prompt support only simple identifier placeholders, explicit overrides win, and batch-only sibling dependency indices are not persisted
+D051 Automatic Git commit requires global and per-task opt-in, snapshots clean state before every execution cwd including worktrees, persists success before Git, and records the hash or non-fatal skip/failure reason on the task run
+D052 Task provenance stores created_by plus an optional creator_session_id; recurring successors preserve provenance, while command-created derivatives belong to the current CLI actor
+D053 task_events intentionally has no task foreign key so management history survives hard deletion; task_created_at disambiguates a reused numeric ID
+D054 Schema initialization takes one SQLite BEGIN IMMEDIATE writer transaction around legacy inference, create_all, and every migration so concurrent AI CLI commands cannot race DDL
+D055 Draft PR publication requires global and per-task opt-in plus an actual automatic commit; draft_pr without auto_commit is rejected for tasks and templates.
+D056 Automatic push is limited to the managed aqr/T<ID> branch of an actual worktree run. Non-worktree current branches are never pushed; publication skips and failures are recorded on task_runs without changing succeeded.
+D057 A DB-specific OS file lease permits one background scheduler owner across GUI and headless processes. The headless worker reserves only auto-approval tasks and only when global_auto_run is enabled; a GUI opened alongside it remains a live DB/log observer and does not stop worker-owned executions when closed.
+D058 GUI polling is adaptive: 1 second while its scheduler runs, 5 seconds while observing an external runtime, and 10 seconds while idle or paused. The existing refresh button always performs an immediate read.
+D059 Superseding D033, a normal exit code 0 is authoritative success and always preserves post-processing. Claude structured rate-limit statuses `allowed` and `allowed_warning` are non-blocking; explicit blocking statuses enter the usage-limit path, while malformed JSON uses text heuristics only for nonzero exits. A successful threshold warning with a valid reset proactively cools the agent without changing the succeeded task.
+D060 Gemini is a first-class AgentName/AgentPolicy but ships disabled by default until its local CLI contract is measured; runtime eligibility still requires both enabled configuration and adapter installation discovery.
+D061 Any-task fallback prefers its recorded alternative when available, otherwise permits any available agent except the most recently failed one; only when no alternative is available may the failed agent retry. This preserves two-agent behavior while supporting three or more agents.
+D062 Plan-batch keeps positive Claude/Codex budgets mandatory for backward compatibility and accepts an optional nonnegative Gemini budget whose absent value is zero; zero-budget agents are excluded from planning.
+D063 Schema v12 rebuilds only legacy tables whose SQLite CHECK SQL contains the two-agent value lists, preserving their existing columns, rows, and explicit indexes while expanding accepted values to Gemini.

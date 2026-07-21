@@ -1,0 +1,90 @@
+# AI Queue Runner configuration example.
+# Copy to config.toml next to this file and adjust. Relative paths resolve
+# against the directory containing config.toml.
+
+[app]
+# Global safety switch: when false, no task runs without user approval.
+global_auto_run = false
+
+# Tasks whose project_path is outside these roots are never executed.
+allowed_project_roots = [
+    # "C:/projects",
+    # "D:/workspace",
+]
+
+db_path = "data/queue.db"
+logs_dir = "logs"
+# Isolated worktrees are created deterministically as worktrees/T<ID>.
+worktrees_dir = "worktrees"
+log_level = "INFO"   # DEBUG | INFO | WARNING | ERROR
+
+[scheduler]
+poll_interval_seconds = 30
+
+# Any-policy fallback: after this many consecutive retryable failures on one AI,
+# prefer an available AI other than the failed one. Usage-limit failures switch immediately and do
+# not consume retry_count.
+fallback_enabled = true
+fallback_failure_threshold = 1
+
+# Scoring (plan §5.2)
+dedicated_agent_bonus = 20
+waiting_time_bonus_per_hour = 1.0
+waiting_time_bonus_max_hours = 24
+retry_penalty_per_attempt = 5
+dependency_bonus_per_dependent = 2
+dependency_bonus_max = 10
+
+# Dedicated-task protection (plan §5.5)
+dedicated_wait_hours_threshold = 12
+dedicated_wait_extra_bonus = 10
+dedicated_priority_preempt = 90
+
+# A reservation older than this is released back to waiting.
+reserved_timeout_minutes = 10
+
+# Only "exclusive" is supported in v1 (plan §5.6).
+project_lock_mode = "exclusive"
+
+# Opt in to same-project parallel execution. A lock-conflicting task runs in
+# worktrees/T<ID> on branch aqr/T<ID>; non-Git/setup failures stay serialized.
+worktree_parallel_enabled = false
+worktree_git_timeout_seconds = 30
+
+# Commit a successful task's changes only when this switch and the task's
+# auto_commit flag are both true. Repositories must be clean before execution.
+auto_commit_enabled = false
+auto_commit_git_timeout_seconds = 30
+
+# Push and open a GitHub draft PR only when this switch and the task's draft_pr
+# flag are true and that run created a commit on its managed aqr/T<ID> worktree.
+draft_pr_enabled = false
+draft_pr_command_timeout_seconds = 30
+
+# Per-agent settings. limit_patterns are substrings searched in CLI output to
+# classify usage-limit errors; adjust them to match your installed CLI versions.
+[agents.claude]
+enabled = true
+executable = "claude"
+run_timeout_minutes = 120
+default_cooldown_minutes = 300
+limit_patterns = ["usage limit", "rate limit", "rate_limit", "session limit"]
+
+[agents.codex]
+enabled = true
+executable = "codex"
+run_timeout_minutes = 120
+default_cooldown_minutes = 300
+limit_patterns = ["usage limit", "rate limit", "rate_limit", "session limit"]
+
+# Gemini is opt-in because its CLI contract has not yet been verified on this machine.
+[agents.gemini]
+enabled = false
+executable = "gemini"
+run_timeout_minutes = 120
+default_cooldown_minutes = 300
+limit_patterns = [
+  "usage limit", "rate limit", "rate_limit", "session limit",
+  "resource exhausted", "resource_exhausted", "quota will reset",
+  "exhausted your capacity",
+]
