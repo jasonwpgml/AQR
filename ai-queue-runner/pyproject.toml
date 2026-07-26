@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5",
     "ruff>=0.4",
 ]
 build = [
@@ -43,3 +44,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.coverage.run]
+source = ["ai_queue_runner"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
