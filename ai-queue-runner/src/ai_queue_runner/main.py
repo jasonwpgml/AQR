@@ -18,7 +18,22 @@ from ai_queue_runner.infrastructure.windows_startup import set_startup_enabled
 logger = logging.getLogger(__name__)
 
 
+def _make_stdio_tolerant_of_unencodable_output() -> None:
+    """Substitute characters the console codepage can't encode instead of crashing.
+
+    AI-generated summaries routinely contain em dashes, smart quotes, and
+    other punctuation outside legacy codepages (e.g. cp949 on Korean
+    Windows), and print() would otherwise raise UnicodeEncodeError.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _make_stdio_tolerant_of_unencodable_output()
     parser = argparse.ArgumentParser(
         prog="ai-queue-runner",
         description="Local task queue scheduler for Claude, Codex, and Gemini CLIs",

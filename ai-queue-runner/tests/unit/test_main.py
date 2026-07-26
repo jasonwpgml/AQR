@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import sys
@@ -53,6 +54,26 @@ def test_main_composes_desktop_app(tmp_path, monkeypatch):
 def test_main_prints_version_without_loading_config(capsys):
     assert main(["--version"]) == 0
     assert "AI Queue Runner 0.1.0" in capsys.readouterr().out
+
+
+def test_main_survives_output_the_console_codepage_cannot_encode(tmp_path, monkeypatch):
+    """AI-generated result summaries routinely contain em dashes and other
+    punctuation legacy codepages like cp949 cannot encode; printing them must
+    not crash the CLI."""
+    monkeypatch.chdir(tmp_path)
+    config_path, _ = write_cli_config(tmp_path)
+    buffer = io.BytesIO()
+    narrow_stdout = io.TextIOWrapper(buffer, encoding="cp949")
+    monkeypatch.setattr(sys, "stdout", narrow_stdout)
+    monkeypatch.setattr(
+        "ai_queue_runner.application.cli_service.run_cli_command",
+        lambda *_args, **_kwargs: "result summary with an em dash — like Claude's output",
+    )
+
+    assert main(cli_args(config_path, "queue-status")) == 0
+
+    narrow_stdout.flush()
+    assert b"?" in buffer.getvalue()
 
 
 def test_main_runs_headless_worker_without_composing_desktop(tmp_path, monkeypatch):
