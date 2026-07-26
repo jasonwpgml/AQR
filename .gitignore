@@ -4,6 +4,8 @@ __pycache__/
 *.runtime.lock
 .pytest_cache/
 .ruff_cache/
+.coverage
+coverage.xml
 dist/
 build/
 *.egg-info/
