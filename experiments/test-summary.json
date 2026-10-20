@@ -1,0 +1,99 @@
+{
+  "project": "AI Queue Runner (AQR)",
+  "source": "https://github.com/jasonwpgml/AQR",
+  "license": "CC-BY-4.0",
+  "run_date": "2026-10-21",
+  "tested_commit": "a2d69c0 (branch oss-release; later commits change only docs and packaging metadata)",
+  "environment": {
+    "os": "Windows 10 (10.0.19045)",
+    "python": "3.12.4",
+    "pyside6": "6.11.2",
+    "sqlalchemy": "2.1.5",
+    "apscheduler": "3.11.3",
+    "pytest": "9.1.1",
+    "pytest_asyncio": "1.4.0",
+    "pytest_cov": "7.1.0",
+    "ruff": "0.17.1"
+  },
+  "command": "python -m pytest -q --cov=ai_queue_runner",
+  "result": {
+    "collected": 372,
+    "passed": 372,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 1,
+    "wall_time_s": 91.57,
+    "warning_detail": "PytestUnraisableExceptionWarning in tests/integration/test_worker.py::test_run_worker_installs_and_restores_signal_handlers (Windows signal wakeup fd, OSError WinError 10038); the test passes"
+  },
+  "tests_by_area": {
+    "unit": 200,
+    "integration": 172
+  },
+  "tests_by_file": {
+    "tests/integration/test_application_services.py": 25,
+    "tests/integration/test_auto_commit.py": 15,
+    "tests/integration/test_execution_service.py": 28,
+    "tests/integration/test_git_worktrees.py": 4,
+    "tests/integration/test_process_runner.py": 14,
+    "tests/integration/test_prompt_templates.py": 3,
+    "tests/integration/test_recovery.py": 12,
+    "tests/integration/test_repositories.py": 28,
+    "tests/integration/test_runtime.py": 12,
+    "tests/integration/test_soak.py": 1,
+    "tests/integration/test_stabilization.py": 5,
+    "tests/integration/test_task_provenance.py": 2,
+    "tests/integration/test_task_reservation.py": 17,
+    "tests/integration/test_task_templates.py": 3,
+    "tests/integration/test_worker.py": 3,
+    "tests/unit/test_adapters.py": 46,
+    "tests/unit/test_config_loader.py": 9,
+    "tests/unit/test_draft_pr.py": 7,
+    "tests/unit/test_log_rendering.py": 6,
+    "tests/unit/test_main.py": 28,
+    "tests/unit/test_path_policy.py": 7,
+    "tests/unit/test_runtime_owner.py": 2,
+    "tests/unit/test_scheduler.py": 20,
+    "tests/unit/test_scoring.py": 5,
+    "tests/unit/test_transitions.py": 17,
+    "tests/unit/test_ui.py": 46,
+    "tests/unit/test_workload_planning.py": 7
+  },
+  "coverage": {
+    "statements": 6186,
+    "missed": 733,
+    "percent": 88,
+    "by_layer": {
+      "application": {
+        "statements": 2562,
+        "missed": 236,
+        "percent": 90.8
+      },
+      "config": {
+        "statements": 135,
+        "missed": 2,
+        "percent": 98.5
+      },
+      "domain": {
+        "statements": 248,
+        "missed": 0,
+        "percent": 100.0
+      },
+      "entry points (main.py, __main__.py, __init__.py)": {
+        "statements": 335,
+        "missed": 75,
+        "percent": 77.6
+      },
+      "infrastructure": {
+        "statements": 1227,
+        "missed": 125,
+        "percent": 89.8
+      },
+      "ui": {
+        "statements": 1679,
+        "missed": 295,
+        "percent": 82.4
+      }
+    }
+  },
+  "ruff": "ruff check src tests: All checks passed!"
+}
