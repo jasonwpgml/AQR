@@ -5,8 +5,37 @@ build-backend = "hatchling.build"
 [project]
 name = "ai-queue-runner"
 version = "0.1.0"
-description = "Local task queue scheduler that dispatches work to Claude and Codex CLIs"
+description = "AI coding agent task queue for Windows: schedules work for Claude Code, Codex and Gemini CLI around usage limits, with priorities, dependencies and parallel git worktrees"
+readme = "README.md"
 requires-python = ">=3.12,<3.15"
+license = "Apache-2.0"
+authors = [{ name = "Jason", email = "295786525+jasonwpgml@users.noreply.github.com" }]
+keywords = [
+    "ai-agents",
+    "coding-agent",
+    "task-queue",
+    "scheduler",
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "git-worktree",
+    "usage-limits",
+    "rate-limit",
+    "pyside6",
+    "windows",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
 dependencies = [
     "APScheduler>=3.11.3,<4",
     "PySide6~=6.11.1",
@@ -26,6 +55,12 @@ build = [
     "pyinstaller==6.21.0",
     "pyinstaller-hooks-contrib==2026.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jasonwpgml/AQR"
+Repository = "https://github.com/jasonwpgml/AQR"
+Documentation = "https://github.com/jasonwpgml/AQR/blob/main/ai-queue-runner/docs/ARCHITECTURE.md"
+Issues = "https://github.com/jasonwpgml/AQR/issues"
 
 [project.scripts]
 ai-queue-runner = "ai_queue_runner.main:main"
