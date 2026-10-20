@@ -5,7 +5,7 @@ description: AQR에서 구현 작업을 Codex CLI에 위임하는 절차. 기능
 
 # Codex 위임 절차
 
-작업 위치: `<repo-root>\ai-queue-runner` (지시문은 `.agent/TASK_T###.md`)
+작업 위치: 저장소 루트 기준 `ai-queue-runner/` (지시문은 `.agent/TASK_T###.md`). 아래 명령은 저장소 루트에서 실행한다.
 
 ## 1. 위임 판단
 - 자체 완결적 기능 단위 → 위임. 문서 수정·수십 줄 이하 픽스·긴급 버그 → Claude 직접.
@@ -16,7 +16,7 @@ description: AQR에서 구현 작업을 Codex CLI에 위임하는 절차. 기능
 
 ## 3. 실행 (Bash 도구, 명령이 `codex exec`로 시작해야 허용 규칙에 걸림)
 ```
-codex exec -C "<repo-root>/ai-queue-runner" -s danger-full-access [모델옵션] \
+codex exec -C "ai-queue-runner" -s danger-full-access [모델옵션] \
   -o "<scratchpad>/t###_last.txt" - < ".agent/TASK_T###.md" > "<scratchpad>/t###_run.log" 2>&1
 ```
 - 백그라운드(run_in_background)로 실행하고 완료 알림을 기다린다. stdin은 반드시 `- < file` (인자로만 주면 멈춤). 파이프 앞에 다른 명령을 붙이면 허용 규칙에 안 걸림.
