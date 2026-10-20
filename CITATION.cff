@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use AI Queue Runner (AQR) or its verification data, please credit it as below and link to the repository."
+title: "AI Queue Runner (AQR): a local task queue that runs coding work through Claude Code, Codex and Gemini CLI around usage limits"
+type: software
+authors:
+  - given-names: Jason
+    alias: jasonwpgml
+repository-code: "https://github.com/jasonwpgml/AQR"
+url: "https://github.com/jasonwpgml/AQR"
+license: Apache-2.0
+version: 0.1.0
+date-released: 2026-10-21
+abstract: >-
+  AI Queue Runner (AQR) is a Windows desktop app and headless worker, written
+  in Python with PySide6 and SQLite, that queues coding tasks for AI coding
+  agent CLIs (Claude Code, OpenAI Codex and Gemini CLI). It picks the next task
+  by priority, dependencies, waiting time and per-agent availability, puts an
+  agent into cooldown when its CLI reports a usage limit and resumes after the
+  reset, reserves tasks atomically so no task runs twice, and can run
+  conflicting tasks on the same repository in parallel git worktrees with
+  optional auto-commit and draft pull requests. The repository includes a
+  reproducible test and verification summary (CC BY 4.0).
+keywords:
+  - ai coding agents
+  - task queue
+  - scheduler
+  - claude code
+  - codex
+  - gemini cli
+  - git worktree
+  - usage limits
+  - rate limits
+  - pyside6
+  - sqlite
+  - windows

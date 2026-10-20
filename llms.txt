@@ -1,0 +1,29 @@
+# AI Queue Runner (AQR)
+
+> AI Queue Runner (AQR) is an open-source AI coding agent task queue for Windows. You register coding tasks ahead of time, and AQR runs them through the Claude Code, OpenAI Codex and Gemini CLIs when an agent is available, waiting out usage limits and resuming automatically. It is a PySide6 desktop app plus a headless worker that share one SQLite queue. Apache-2.0, by Jason (@jasonwpgml).
+
+Key facts:
+- Tasks have a target agent (`claude`, `codex`, `gemini` or `any`), priority 0-100, dependencies, a `not-before` time, retries, tags, recurrence and an approval mode (`auto` or `confirm`).
+- Scheduling: candidates are filtered by agent availability, dependencies and project locks, then scored by priority, dedicated-agent bonus, waiting time, retry penalty and dependents. Reservation is atomic in SQLite, so one task never runs on two agents, and one agent runs one task at a time.
+- Usage limits: when a CLI reports a usage limit, the task goes back to `waiting` without using a retry, the agent goes into cooldown (Claude's reported reset time, otherwise `default_cooldown_minutes` = 300), and an `any` task moves to another available agent.
+- Retries: default `max_retries` 2 with a 10-minute `retry_delay`; stale reservations are released after 10 minutes; each run times out after 120 minutes by default.
+- Same-project parallelism (opt-in): a task that conflicts with a running task on the same Git repository runs in `worktrees/T<ID>` on branch `aqr/T<ID>`. Nothing is merged automatically.
+- Optional auto-commit of successful runs (repository must be clean before the run) and optional GitHub draft PRs from managed worktree branches via `gh`.
+- Safety: tasks only run under `allowed_project_roots` (empty means nothing runs), prompts are sent on stdin, and cancel/timeout kills the whole process tree.
+- Full CLI for other agents to manage the queue: `add-task`, `list-tasks --json`, `show-task`, `plan-batch` (token-budget distribution), `split-task`, `review-task`, `daily-summary`, `worker` and more.
+- Python 3.12-3.14, PySide6, SQLAlchemy/SQLite (WAL), APScheduler, psutil, pydantic. Windows only; PyInstaller onedir build script included.
+
+## Docs
+- [README](https://github.com/jasonwpgml/AQR#readme): features, quick start, configuration, citation
+- [README (Korean)](https://github.com/jasonwpgml/AQR/blob/main/README.ko.md)
+- [App README and full CLI reference (Korean)](https://github.com/jasonwpgml/AQR/blob/main/ai-queue-runner/README.md)
+- [Architecture (Korean)](https://github.com/jasonwpgml/AQR/blob/main/ai-queue-runner/docs/ARCHITECTURE.md): layers, data model, state machine, CLI safety boundary
+- [AI operations guide (Korean)](https://github.com/jasonwpgml/AQR/blob/main/ai-queue-runner/docs/AI_GUIDE.md): how an AI agent should drive the queue headlessly
+- [Requirements and plan (Korean)](https://github.com/jasonwpgml/AQR/blob/main/AI_QUEUE_RUNNER_PLAN.md)
+- [Verification summary](https://github.com/jasonwpgml/AQR/blob/main/experiments/README.md): test counts by area, coverage, reliability defaults (CC BY 4.0)
+- [CONTRIBUTING](https://github.com/jasonwpgml/AQR/blob/main/CONTRIBUTING.md)
+- [NOTICE](https://github.com/jasonwpgml/AQR/blob/main/NOTICE): attribution required for redistribution
+- [Third-party notices](https://github.com/jasonwpgml/AQR/blob/main/ai-queue-runner/THIRD_PARTY_NOTICES.md): PySide6/Qt LGPLv3, PyInstaller
+
+## Attribution
+Reuse is welcome under Apache-2.0. Keep the NOTICE file and credit "AI Queue Runner (AQR) by Jason (@jasonwpgml)" with a link to https://github.com/jasonwpgml/AQR. The material in experiments/ is CC BY 4.0 and requires the same credit.
